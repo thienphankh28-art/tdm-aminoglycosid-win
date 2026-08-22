@@ -508,15 +508,20 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         date_str = tdm_date.strftime("%Y-%m-%d")
 
         def do_save():
-            db.save_patient_info(msyt_input, self.gender_opt.get(), self.weight_entry.get_float(),
-                                  self.height_entry.get_float(), self.age_entry.get_float(),
-                                  int(self.is_cf_check.get()))
+            ok_info, msg_info = db.save_patient_info(
+                msyt_input, self.gender_opt.get(), self.weight_entry.get_float(),
+                self.height_entry.get_float(), self.age_entry.get_float(),
+                int(self.is_cf_check.get()))
+            if not ok_info:
+                self.save3_status.show(f"❌ {msg_info}", "error")
+                return
             c = self.sec3
-            db.save_sec3_data(msyt_input, date_str, self.current_scr_entry.get_float(),
-                               self.t1_entry.get_float(), self.c1_entry.get_float(),
-                               self.t2_entry.get_float(), self.c2_entry.get_float(),
-                               c["ke"], c["thalf"], c["vd"], c["cp"], c["ctr"])
-            self.save3_status.show(f"✅ Đã lưu block TDM lên Cloud cho ngày {date_str}.", "success")
+            ok_tdm, msg_tdm = db.save_sec3_data(
+                msyt_input, date_str, self.current_scr_entry.get_float(),
+                self.t1_entry.get_float(), self.c1_entry.get_float(),
+                self.t2_entry.get_float(), self.c2_entry.get_float(),
+                c["ke"], c["thalf"], c["vd"], c["cp"], c["ctr"])
+            self.save3_status.show(("✅ " if ok_tdm else "❌ ") + msg_tdm, "success" if ok_tdm else "error")
 
         if db.check_tdm_exists(msyt_input, date_str):
             if messagebox.askyesno("Xác nhận ghi đè",
@@ -595,9 +600,9 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         s4 = self.sec4
 
         def do_save():
-            db.save_sec4_data(msyt_input, date_str, new_dose_mg, new_tau_h, new_t_inf_h,
-                               s4["cp_pred"], s4["ctr_pred"])
-            self.save4_status.show(f"✅ Đã lưu phác đồ mới lên Cloud block ngày {date_str}.", "success")
+            ok, msg = db.save_sec4_data(msyt_input, date_str, new_dose_mg, new_tau_h, new_t_inf_h,
+                                         s4["cp_pred"], s4["ctr_pred"])
+            self.save4_status.show(("✅ " if ok else "❌ ") + msg, "success" if ok else "error")
 
         existing_block = db.get_specific_tdm_block(msyt_input, date_str)
         if existing_block and existing_block.get("new_dose") is not None:
@@ -927,8 +932,8 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
             return
         date_sel = self.date_option_var.get()
         if messagebox.askyesno("Xác nhận xóa", f"Xóa block TDM ngày {date_sel} của bệnh nhân {self.current_msyt}?"):
-            db.delete_tdm_block(self.current_msyt, date_sel)
-            self.delete_status.show(f"✅ Đã xóa thành công block TDM ngày {date_sel}!", "success")
+            ok, msg = db.delete_tdm_block(self.current_msyt, date_sel)
+            self.delete_status.show(("✅ " if ok else "❌ ") + msg, "success" if ok else "error")
             self.lookup()
 
     def delete_patient(self):
@@ -938,8 +943,8 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
         if messagebox.askyesno("Xác nhận xóa vĩnh viễn",
                                 f"⚠️ Xóa TOÀN BỘ hồ sơ và lịch sử TDM của bệnh nhân {self.current_msyt}?\n"
                                 f"Thao tác này không thể hoàn tác!"):
-            db.delete_patient(self.current_msyt)
-            self.delete_status.show(f"✅ Đã xóa bệnh nhân {self.current_msyt} khỏi Cloud!", "success")
+            ok, msg = db.delete_patient(self.current_msyt)
+            self.delete_status.show(("✅ " if ok else "❌ ") + msg, "success" if ok else "error")
             self.lookup()
 
     def _refresh_trend(self, msyt):
