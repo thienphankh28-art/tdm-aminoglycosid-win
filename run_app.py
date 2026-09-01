@@ -34,7 +34,7 @@ COPYRIGHT_EMAIL = "thienphankh28@gmail.com"
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-aminoglycosid-win/refs/heads/main/version.json"
 GITHUB_CODE_BASE_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-aminoglycosid-win/main/"
 
-FILES_TO_UPDATE = ["app.py", "database.py", "pk_calculations.py", "vanco_calculations", "version.json"]
+FILES_TO_UPDATE = ["app.py", "database.py", "pk_calculations.py", "vanco_calculations.py", "version.json"]
 
 # ---------------------------------------------------------
 # XÁC ĐỊNH THƯ MỤC DỮ LIỆU (BASE_DIR) VÀ THƯ MỤC BUNDLE GỐC

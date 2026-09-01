@@ -2,7 +2,15 @@
 
 
 
+
+
+
+
 pk_calculations.py — Các hàm tính toán Dược động học (PK) cho TDM Aminoglycosid
+
+
+
+
 
 
 
@@ -14,11 +22,27 @@ pk_calculations.py — Các hàm tính toán Dược động học (PK) cho TDM 
 
 
 
+
+
+
+
+
+
+
+
 import numpy as np
 
 
 
+
+
+
+
 from dataclasses import dataclass
+
+
+
+
 
 
 
@@ -30,7 +54,19 @@ from typing import Optional
 
 
 
+
+
+
+
+
+
+
+
 @dataclass
+
+
+
+
 
 
 
@@ -38,7 +74,15 @@ class PatientInfo:
 
 
 
+
+
+
+
     gender: str
+
+
+
+
 
 
 
@@ -46,7 +90,15 @@ class PatientInfo:
 
 
 
+
+
+
+
     weight_kg: float
+
+
+
+
 
 
 
@@ -54,7 +106,15 @@ class PatientInfo:
 
 
 
+
+
+
+
     age: float
+
+
+
+
 
 
 
@@ -66,7 +126,19 @@ class PatientInfo:
 
 
 
+
+
+
+
+
+
+
+
 @dataclass
+
+
+
+
 
 
 
@@ -74,7 +146,15 @@ class InitialDoseInput:
 
 
 
+
+
+
+
     dose_mg_per_kg: float
+
+
+
+
 
 
 
@@ -82,11 +162,23 @@ class InitialDoseInput:
 
 
 
+
+
+
+
     tau_h: float
 
 
 
+
+
+
+
     target_cp: float
+
+
+
+
 
 
 
@@ -98,7 +190,19 @@ class InitialDoseInput:
 
 
 
+
+
+
+
+
+
+
+
 @dataclass
+
+
+
+
 
 
 
@@ -106,7 +210,15 @@ class MeasuredLevels:
 
 
 
+
+
+
+
     is_first_dose: bool
+
+
+
+
 
 
 
@@ -114,7 +226,15 @@ class MeasuredLevels:
 
 
 
+
+
+
+
     c1: float
+
+
+
+
 
 
 
@@ -122,7 +242,15 @@ class MeasuredLevels:
 
 
 
+
+
+
+
     c2: float
+
+
+
+
 
 
 
@@ -130,7 +258,15 @@ class MeasuredLevels:
 
 
 
+
+
+
+
     tau_h: float
+
+
+
+
 
 
 
@@ -142,7 +278,19 @@ class MeasuredLevels:
 
 
 
+
+
+
+
+
+
+
+
 @dataclass
+
+
+
+
 
 
 
@@ -150,7 +298,15 @@ class DoseAdjustment:
 
 
 
+
+
+
+
     new_dose_mg: float
+
+
+
+
 
 
 
@@ -166,7 +322,23 @@ class DoseAdjustment:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 # ==========================================
+
+
+
+
 
 
 
@@ -174,7 +346,19 @@ class DoseAdjustment:
 
 
 
+
+
+
+
 # ==========================================
+
+
+
+
+
+
+
+
 
 
 
@@ -186,7 +370,15 @@ def compute_bmi(patient: PatientInfo) -> float:
 
 
 
+
+
+
+
     height_m = patient.height_cm / 100.0
+
+
+
+
 
 
 
@@ -194,7 +386,15 @@ def compute_bmi(patient: PatientInfo) -> float:
 
 
 
+
+
+
+
         return 0.0
+
+
+
+
 
 
 
@@ -206,7 +406,19 @@ def compute_bmi(patient: PatientInfo) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_ibw(patient: PatientInfo) -> float:
+
+
+
+
 
 
 
@@ -214,7 +426,15 @@ def compute_ibw(patient: PatientInfo) -> float:
 
 
 
+
+
+
+
     over_60_inch = max(0.0, height_inch - 60.0)
+
+
+
+
 
 
 
@@ -222,11 +442,23 @@ def compute_ibw(patient: PatientInfo) -> float:
 
 
 
+
+
+
+
         return 50.0 + 2.3 * over_60_inch
 
 
 
+
+
+
+
     else:
+
+
+
+
 
 
 
@@ -238,7 +470,19 @@ def compute_ibw(patient: PatientInfo) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_dosing_weight(patient: PatientInfo, ibw: float) -> float:
+
+
+
+
 
 
 
@@ -246,7 +490,15 @@ def compute_dosing_weight(patient: PatientInfo, ibw: float) -> float:
 
 
 
+
+
+
+
     if bmi > 30.0:
+
+
+
+
 
 
 
@@ -254,7 +506,15 @@ def compute_dosing_weight(patient: PatientInfo, ibw: float) -> float:
 
 
 
+
+
+
+
     else:
+
+
+
+
 
 
 
@@ -266,7 +526,19 @@ def compute_dosing_weight(patient: PatientInfo, ibw: float) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_crcl(patient: PatientInfo, bmi: float, ibw: float, dosing_weight: float) -> float:
+
+
+
+
 
 
 
@@ -274,7 +546,15 @@ def compute_crcl(patient: PatientInfo, bmi: float, ibw: float, dosing_weight: fl
 
 
 
+
+
+
+
     scr_mg_dl = patient.scr_umol / 88.4
+
+
+
+
 
 
 
@@ -282,7 +562,15 @@ def compute_crcl(patient: PatientInfo, bmi: float, ibw: float, dosing_weight: fl
 
 
 
+
+
+
+
         return 0.0
+
+
+
+
 
 
 
@@ -290,11 +578,23 @@ def compute_crcl(patient: PatientInfo, bmi: float, ibw: float, dosing_weight: fl
 
 
 
+
+
+
+
     factor = 1.0 if patient.gender.lower() in ['nam', 'male', 'm'] else 0.85
 
 
 
+
+
+
+
     crcl = ((140.0 - patient.age) * weight_for_cg * factor) / (72.0 * scr_mg_dl)
+
+
+
+
 
 
 
@@ -306,7 +606,19 @@ def compute_crcl(patient: PatientInfo, bmi: float, ibw: float, dosing_weight: fl
 
 
 
+
+
+
+
+
+
+
+
 def compute_ke_population(crcl: float) -> float:
+
+
+
+
 
 
 
@@ -318,7 +630,19 @@ def compute_ke_population(crcl: float) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_t_half(ke: float) -> float:
+
+
+
+
 
 
 
@@ -326,7 +650,15 @@ def compute_t_half(ke: float) -> float:
 
 
 
+
+
+
+
         return 0.0
+
+
+
+
 
 
 
@@ -338,11 +670,27 @@ def compute_t_half(ke: float) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_vd_population(dosing_weight: float, is_cf: bool) -> float:
 
 
 
+
+
+
+
     factor = 0.35 if is_cf else 0.25
+
+
+
+
 
 
 
@@ -354,7 +702,19 @@ def compute_vd_population(dosing_weight: float, is_cf: bool) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_total_dose(dose_mg_per_kg: float, dosing_weight: float) -> float:
+
+
+
+
 
 
 
@@ -366,7 +726,19 @@ def compute_total_dose(dose_mg_per_kg: float, dosing_weight: float) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_suggested_tau(target_cp: float, target_ctrough: float, ke: float, infusion_time_h: float) -> float:
+
+
+
+
 
 
 
@@ -374,7 +746,15 @@ def compute_suggested_tau(target_cp: float, target_ctrough: float, ke: float, in
 
 
 
+
+
+
+
         return 24.0
+
+
+
+
 
 
 
@@ -382,7 +762,15 @@ def compute_suggested_tau(target_cp: float, target_ctrough: float, ke: float, in
 
 
 
+
+
+
+
     if ratio <= 1.0:
+
+
+
+
 
 
 
@@ -390,7 +778,15 @@ def compute_suggested_tau(target_cp: float, target_ctrough: float, ke: float, in
 
 
 
+
+
+
+
     tau = np.log(ratio) / ke + infusion_time_h
+
+
+
+
 
 
 
@@ -402,7 +798,19 @@ def compute_suggested_tau(target_cp: float, target_ctrough: float, ke: float, in
 
 
 
+
+
+
+
+
+
+
+
 def compute_predicted_cp_population(total_dose: float, target_cp: float, ke: float, tau_h: float) -> float:
+
+
+
+
 
 
 
@@ -414,11 +822,27 @@ def compute_predicted_cp_population(total_dose: float, target_cp: float, ke: flo
 
 
 
+
+
+
+
+
+
+
+
 def compute_predicted_ctrough_population(cp_pred: float, ke: float, tau_h: float, infusion_time_h: float) -> float:
 
 
 
+
+
+
+
     t_decline = max(0.0, tau_h - infusion_time_h)
+
+
+
+
 
 
 
@@ -434,7 +858,23 @@ def compute_predicted_ctrough_population(cp_pred: float, ke: float, tau_h: float
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 # ==========================================
+
+
+
+
 
 
 
@@ -442,7 +882,19 @@ def compute_predicted_ctrough_population(cp_pred: float, ke: float, tau_h: float
 
 
 
+
+
+
+
 # ==========================================
+
+
+
+
+
+
+
+
 
 
 
@@ -454,11 +906,23 @@ def compute_ke_individual(measured: MeasuredLevels) -> float:
 
 
 
+
+
+
+
     if measured.t2_h <= measured.t1_h or measured.c1 <= 0 or measured.c2 <= 0:
 
 
 
+
+
+
+
         return 0.0
+
+
+
+
 
 
 
@@ -470,7 +934,19 @@ def compute_ke_individual(measured: MeasuredLevels) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_t_half_individual(ke_ind: float) -> float:
+
+
+
+
 
 
 
@@ -482,7 +958,19 @@ def compute_t_half_individual(ke_ind: float) -> float:
 
 
 
+
+
+
+
+
+
+
+
 def compute_true_peak(measured: MeasuredLevels, ke_ind: float) -> float:
+
+
+
+
 
 
 
@@ -490,7 +978,15 @@ def compute_true_peak(measured: MeasuredLevels, ke_ind: float) -> float:
 
 
 
+
+
+
+
         return measured.c1
+
+
+
+
 
 
 
@@ -498,7 +994,15 @@ def compute_true_peak(measured: MeasuredLevels, ke_ind: float) -> float:
 
 
 
+
+
+
+
         return measured.c1 * np.exp(ke_ind * (measured.t1_h - measured.infusion_time_h))
+
+
+
+
 
 
 
@@ -506,7 +1010,19 @@ def compute_true_peak(measured: MeasuredLevels, ke_ind: float) -> float:
 
 
 
+
+
+
+
         return measured.c1
+
+
+
+
+
+
+
+
 
 
 
@@ -518,7 +1034,15 @@ def compute_true_trough(true_peak: float, ke_ind: float, infusion_time_h: float,
 
 
 
+
+
+
+
     t_decline = max(0.0, tau_h - infusion_time_h)
+
+
+
+
 
 
 
@@ -530,7 +1054,19 @@ def compute_true_trough(true_peak: float, ke_ind: float, infusion_time_h: float,
 
 
 
+
+
+
+
+
+
+
+
 def compute_vd_individual_exact(dose_mg: float, ke: float, peak: float, t_inf: float, tau: float, is_first_dose: bool) -> float:
+
+
+
+
 
 
 
@@ -538,7 +1074,15 @@ def compute_vd_individual_exact(dose_mg: float, ke: float, peak: float, t_inf: f
 
 
 
+
+
+
+
     if is_first_dose:
+
+
+
+
 
 
 
@@ -546,7 +1090,15 @@ def compute_vd_individual_exact(dose_mg: float, ke: float, peak: float, t_inf: f
 
 
 
+
+
+
+
     else:
+
+
+
+
 
 
 
@@ -554,7 +1106,19 @@ def compute_vd_individual_exact(dose_mg: float, ke: float, peak: float, t_inf: f
 
 
 
+
+
+
+
     return num / den if den > 0 else 0.0
+
+
+
+
+
+
+
+
 
 
 
@@ -566,7 +1130,19 @@ def compute_vd_individual(dose_mg: float, ke: float, peak: float, t_inf: float, 
 
 
 
+
+
+
+
     return compute_vd_individual_exact(dose_mg, ke, peak, t_inf, tau, is_first_dose)
+
+
+
+
+
+
+
+
 
 
 
@@ -578,11 +1154,23 @@ def compute_cp_predicted_adjusted(dose_new: float, ke: float, vd_ind: float, t_i
 
 
 
+
+
+
+
     num = dose_new * (1 - np.exp(-ke * t_inf_new))
 
 
 
+
+
+
+
     den = t_inf_new * vd_ind * ke * (1 - np.exp(-ke * tau_new))
+
+
+
+
 
 
 
@@ -594,7 +1182,19 @@ def compute_cp_predicted_adjusted(dose_new: float, ke: float, vd_ind: float, t_i
 
 
 
+
+
+
+
+
+
+
+
 def compute_predicted_cp_adjusted(dose_new: float, ke: float, vd_ind: float, t_inf_new: float, tau_new: float) -> float:
+
+
+
+
 
 
 
@@ -606,7 +1206,19 @@ def compute_predicted_cp_adjusted(dose_new: float, ke: float, vd_ind: float, t_i
 
 
 
+
+
+
+
+
+
+
+
 def compute_ctrough_predicted_adjusted(cp_pred: float, ke: float, t_inf_new: float, tau_new: float) -> float:
+
+
+
+
 
 
 
@@ -618,7 +1230,19 @@ def compute_ctrough_predicted_adjusted(cp_pred: float, ke: float, t_inf_new: flo
 
 
 
+
+
+
+
+
+
+
+
 def compute_predicted_ctrough_adjusted(cp_pred: float, ke: float, t_inf_new: float, tau_new: float) -> float:
+
+
+
+
 
 
 
@@ -634,7 +1258,23 @@ def compute_predicted_ctrough_adjusted(cp_pred: float, ke: float, t_inf_new: flo
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 # ==========================================
+
+
+
+
 
 
 
@@ -642,7 +1282,19 @@ def compute_predicted_ctrough_adjusted(cp_pred: float, ke: float, t_inf_new: flo
 
 
 
+
+
+
+
 # ==========================================
+
+
+
+
+
+
+
+
 
 
 
@@ -654,7 +1306,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
     times = []
+
+
+
+
 
 
 
@@ -662,7 +1322,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
     current_time_offset = 0.0
+
+
+
+
 
 
 
@@ -670,7 +1338,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
     for cycle in range(1, num_cycles + 1):
+
+
+
+
 
 
 
@@ -678,7 +1354,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             current_tau = tau_old
+
+
+
+
 
 
 
@@ -686,7 +1370,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             t_inf_curr = t_inf_old
+
+
+
+
 
 
 
@@ -694,7 +1386,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             for t_rel in t_inf_pts:
+
+
+
+
 
 
 
@@ -702,11 +1402,23 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
                 times.append(current_time_offset + t_rel)
 
 
 
+
+
+
+
                 concs.append(c_t)
+
+
+
+
 
 
 
@@ -714,7 +1426,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             for t_rel in t_elim_pts[1:]:
+
+
+
+
 
 
 
@@ -722,7 +1442,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
                 times.append(current_time_offset + t_rel)
+
+
+
+
 
 
 
@@ -730,11 +1458,23 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             c_min_prev = c_max * np.exp(-ke * (current_tau - t_inf_curr))
 
 
 
+
+
+
+
             current_time_offset += current_tau
+
+
+
+
 
 
 
@@ -742,7 +1482,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             current_tau = tau_new
+
+
+
+
 
 
 
@@ -750,7 +1498,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             c_max = (dose_new * (1 - np.exp(-ke * t_inf_curr))) / (t_inf_curr * vd * ke) + c_min_prev * np.exp(-ke * t_inf_curr)
+
+
+
+
 
 
 
@@ -758,7 +1514,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             for t_rel in t_inf_pts:
+
+
+
+
 
 
 
@@ -766,11 +1530,23 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
                 times.append(current_time_offset + t_rel)
 
 
 
+
+
+
+
                 concs.append(c_t)
+
+
+
+
 
 
 
@@ -778,7 +1554,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             for t_rel in t_elim_pts[1:]:
+
+
+
+
 
 
 
@@ -786,7 +1570,15 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
                 times.append(current_time_offset + t_rel)
+
+
+
+
 
 
 
@@ -794,11 +1586,23 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
             c_min_prev = c_max * np.exp(-ke * (current_tau - t_inf_curr))
 
 
 
+
+
+
+
             current_time_offset += current_tau
+
+
+
+
 
 
 
@@ -810,11 +1614,27 @@ def simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new
 
 
 
+
+
+
+
+
+
+
+
 def simulate_dosing_curve_custom(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new, tau_new, t_inf_new, num_cycles=10):
 
 
 
+
+
+
+
     return simulate_dosing_curve(ke, vd, t_inf_old, tau_old, peak_1, trough_1, dose_new, tau_new, t_inf_new, num_cycles)
+
+
+
+
 
 
 
