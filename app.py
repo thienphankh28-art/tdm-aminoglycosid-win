@@ -2464,6 +2464,36 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
+        prev_row = ctk.CTkFrame(self, fg_color="transparent")
+
+        prev_row.pack(fill="x", padx=6, pady=(6, 4))
+
+        prev_row.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="prevres")
+
+        ctk.CTkLabel(prev_row, text="📋 Kết quả TDM lần trước (nếu có):", font=FONT_SMALL,
+
+                     text_color=("gray30", "gray80")).grid(
+
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        self.card_prev_cl = MetricCard(prev_row, "CLbn lần trước (L/h)")
+
+        self.card_prev_cl.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+
+        self.card_prev_vc = MetricCard(prev_row, "Vc_post lần trước (L)")
+
+        self.card_prev_vc.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+
+        self.card_prev_vp = MetricCard(prev_row, "Vp_post lần trước (L)")
+
+        self.card_prev_vp.grid(row=1, column=2, sticky="ew", padx=4, pady=4)
+
+        self.card_prev_auc = MetricCard(prev_row, "AUC hiện tại lần trước (mg·h/L)")
+
+        self.card_prev_auc.grid(row=1, column=3, sticky="ew", padx=4, pady=4)
+
+
+
         grid = ctk.CTkFrame(self, fg_color="transparent")
 
         grid.pack(fill="x", padx=6)
@@ -2612,15 +2642,17 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         """
 
-        Tải lại thông tin bệnh nhân + chế độ liều dùng đã nhập ở lần TDM Vancomycin gần
+        Tải lại thông tin bệnh nhân + chế độ liều dùng đã nhập ở lần TDM Vancomycin GẦN NHẤT
 
-        nhất trên Cloud (Supabase), theo MSYT đang nhập ở Mục 1. Bắt buộc gồm: thông tin
+        (bảng vanco_patient_current — chỉ lưu 1 bản mới nhất / MSYT) và hiển thị nhanh KẾT QUẢ
 
-        bệnh nhân (tuổi, giới tính, chiều cao, cân nặng, SCr, lọc máu) và toàn bộ lịch sử
+        của lần TDM gần nhất (bảng vanco_results_history — lưu đầy đủ từng lần) theo MSYT đang
 
-        liều dùng (doses_json) của lần TDM trước; ngoài ra tải luôn Cobs/Tobs/Tinf để
+        nhập ở Mục 1. Bắt buộc gồm: thông tin bệnh nhân (tuổi, giới tính, chiều cao, cân nặng,
 
-        người dùng tham khảo/chỉnh sửa cho lần TDM mới.
+        SCr, lọc máu) và toàn bộ lịch sử liều dùng của lần TDM trước; ngoài ra hiển thị CLbn,
+
+        Vc_post, Vp_post, AUC hiện tại của lần TDM gần nhất để bác sĩ tham khảo.
 
         """
 
@@ -2634,13 +2666,21 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-        record = db.get_latest_vanco_tdm(msyt)
+        record = db.get_vanco_patient_current(msyt)
 
         if not record:
 
             self.v_lookup_status.show(
 
                 "❌ Không tìm thấy dữ liệu TDM Vancomycin nào cho MSYT này trên Cloud.", "error")
+
+            self.card_prev_cl.set_value("--")
+
+            self.card_prev_vc.set_value("--")
+
+            self.card_prev_vp.set_value("--")
+
+            self.card_prev_auc.set_value("--")
 
             return
 
@@ -2736,21 +2776,53 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-        # --- 3) Nồng độ đo được lần trước (tiện tham khảo, không bắt buộc nhưng vẫn tải) ---
+        # --- 3) Kết quả TDM lần gần nhất (chỉ hiển thị tham khảo: CLbn, Vc_post, Vp_post, AUC) ---
 
-        if record.get("c_obs") is not None:
+        prev_result = db.get_latest_vanco_result(msyt)
 
-            self.v_cobs_entry.set(record.get("c_obs"))
+        if prev_result:
 
-        if record.get("t_obs"):
+            cl_v = prev_result.get("cl_optimized")
 
-            self.v_tobs_entry.delete(0, "end")
+            vc_v = prev_result.get("vc_optimized")
 
-            self.v_tobs_entry.insert(0, str(record.get("t_obs")))
+            vp_v = prev_result.get("vp_optimized")
 
-        if record.get("t_inf") is not None:
+            auc_v = prev_result.get("auc_current")
 
-            self.v_tinf_entry.set(record.get("t_inf"))
+            self.card_prev_cl.set_value(f"{cl_v:.4f}" if cl_v is not None else "--")
+
+            self.card_prev_vc.set_value(f"{vc_v:.2f}" if vc_v is not None else "--")
+
+            self.card_prev_vp.set_value(f"{vp_v:.2f}" if vp_v is not None else "--")
+
+            self.card_prev_auc.set_value(f"{auc_v:.2f}" if auc_v is not None else "--")
+
+            # Tiện thể nạp luôn Cobs/Tobs/Tinf của lần trước để tham khảo/chỉnh sửa
+
+            if prev_result.get("c_obs") is not None:
+
+                self.v_cobs_entry.set(prev_result.get("c_obs"))
+
+            if prev_result.get("t_obs"):
+
+                self.v_tobs_entry.delete(0, "end")
+
+                self.v_tobs_entry.insert(0, str(prev_result.get("t_obs")))
+
+            if prev_result.get("t_inf") is not None:
+
+                self.v_tinf_entry.set(prev_result.get("t_inf"))
+
+        else:
+
+            self.card_prev_cl.set_value("Chưa có")
+
+            self.card_prev_vc.set_value("Chưa có")
+
+            self.card_prev_vp.set_value("Chưa có")
+
+            self.card_prev_auc.set_value("Chưa có")
 
 
 
@@ -2760,17 +2832,11 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-        tdm_date = record.get("tdm_date", "")
+        self.v_lookup_status.show(f"✅ Đã tải dữ liệu bệnh nhân {msyt}.", "success")
 
-        self.v_lookup_status.show(
 
-            f"✅ Đã tải dữ liệu bệnh nhân {msyt} (lần TDM gần nhất: {tdm_date}). "
 
-            f"CLbn/Vc,bn/Vp,bn lần trước: "
 
-            f"{record.get('cl_optimized')}, {record.get('vc_optimized')}, {record.get('vp_optimized')}.",
-
-            "success")
 
 
 
@@ -3050,7 +3116,95 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
+        row3 = ctk.CTkFrame(self, fg_color="transparent")
+
+        row3.pack(fill="x", padx=6, pady=(8, 0))
+
+        ctk.CTkLabel(
+
+            row3, text="AUC hiện tại = Liều × 24 / (τ × Clbn) — tính theo LIỀU CUỐI CÙNG ở Mục 3",
+
+            font=FONT_SMALL, text_color=("gray40", "gray70")
+
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.card_auc_current = MetricCard(row3, "AUC hiện tại (mg·h/L)")
+
+        self.card_auc_current.pack(fill="x", padx=4, pady=4)
+
+
+
         ttk.Separator(self, orient="horizontal").pack(fill="x", padx=6, pady=14)
+
+
+
+    def _get_last_dose_row(self):
+
+        """Trả về VancoDoseRow có thời điểm truyền MUỘN NHẤT (liều cuối cùng ở Mục 3)."""
+
+        if not self.dose_rows:
+
+            return None
+
+        return max(self.dose_rows, key=lambda r: r.get_dose().given_at)
+
+
+
+
+
+
+
+    def calc_auc_current(self):
+
+        """AUC hiện tại = Liều (của liều cuối cùng ở Mục 3) × 24 / (τ của liều đó × Clbn
+
+        vừa tối ưu Bayes). Kết quả được lưu vào self.auc_current_value để dùng khi lưu Cloud."""
+
+        if self.bayes_result is None or not self.bayes_result.success:
+
+            self.card_auc_current.set_value("Chưa chạy solve Bayes")
+
+            self.auc_current_value = None
+
+            return None
+
+
+
+        last_row = self._get_last_dose_row()
+
+        if last_row is None:
+
+            self.card_auc_current.set_value("Chưa có liều ở Mục 3")
+
+            self.auc_current_value = None
+
+            return None
+
+
+
+        last_dose = last_row.get_dose()
+
+        tau = last_row.get_tau()
+
+        clbn = self.bayes_result.CL_optimized
+
+        if tau <= 0 or clbn <= 0:
+
+            self.card_auc_current.set_value("Giá trị không hợp lệ")
+
+            self.auc_current_value = None
+
+            return None
+
+
+
+        auc = (last_dose.dose_mg * 24.0) / (tau * clbn)
+
+        self.card_auc_current.set_value(f"{auc:.2f} mg·h/L")
+
+        self.auc_current_value = auc
+
+        return auc
 
 
 
@@ -3135,6 +3289,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         # Tự động tính AUC luôn nếu đã có thông số mới
 
         self.calc_auc()
+
+        self.calc_auc_current()
 
         self.refresh_chart()
 
@@ -3338,6 +3494,24 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
     def save_result(self):
 
+        """
+
+        Lưu kết quả TDM Vancomycin lên Cloud, TÁCH RIÊNG 2 loại dữ liệu theo đúng yêu cầu:
+
+        1) Thông tin bệnh nhân + chế độ liều dùng (Mục 1 & 3) -> CHỈ LƯU BẢN MỚI NHẤT
+
+           (ghi đè bảng vanco_patient_current, 1 dòng / MSYT) để lần TDM sau load lại đúng
+
+           chế độ liều hiện hành.
+
+        2) Kết quả của lần chạy Bayes này (Mục 5, gồm cả AUC hiện tại) -> LUÔN THÊM MỚI
+
+           (insert vào bảng vanco_results_history, KHÔNG bao giờ ghi đè) để giữ lại đầy đủ
+
+           lịch sử của TỪNG lần TDM đã thực hiện.
+
+        """
+
         msyt_input = self.v_msyt_entry.get().strip()
 
         if not msyt_input:
@@ -3368,13 +3542,33 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-        ok, msg = db.save_vanco_tdm(
+        # Đảm bảo AUC hiện tại đã được tính theo dữ liệu mới nhất trước khi lưu
 
-            msyt=msyt_input, tdm_date=date_str,
+        auc_current = self.calc_auc_current()
+
+
+
+        # --- 1) Thông tin bệnh nhân + chế độ liều dùng: CHỈ LƯU/GHI ĐÈ BẢN MỚI NHẤT ---
+
+        ok1, msg1 = db.save_vanco_patient_current(
+
+            msyt=msyt_input,
 
             age=patient.age, gender=patient.gender, height=patient.height_cm,
 
             weight=patient.weight_kg, scr=patient.scr_value, is_dialysis=int(patient.is_dialysis),
+
+            doses_json=doses_payload,
+
+        )
+
+
+
+        # --- 2) Kết quả lần TDM này: LUÔN THÊM MỚI vào lịch sử, không ghi đè ---
+
+        ok2, msg2 = db.save_vanco_result_history(
+
+            msyt=msyt_input, tdm_date=date_str,
 
             q_prior=6.5,
 
@@ -3384,17 +3578,31 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
             vp_prior=self.priors.vp_prior if self.priors else None,
 
-            doses_json=doses_payload,
-
             c_obs=m.c_obs, t_obs=m.t_obs.strftime("%Y-%m-%d %H:%M"), t_inf=m.t_inf_h,
 
             cl_optimized=r.CL_optimized, vc_optimized=r.Vc_optimized, vp_optimized=r.Vp_optimized,
 
             c_pred_final=r.C_pred_final, ofv_final=r.OFV_final,
 
+            auc_current=auc_current,
+
         )
 
-        self.save_status.show(("✅ " if ok else "❌ ") + msg, "success" if ok else "error")
+
+
+        if ok1 and ok2:
+
+            self.save_status.show(
+
+                "✅ Đã lưu bản mới nhất (thông tin BN + liều dùng) và thêm mới vào lịch sử kết quả TDM.",
+
+                "success")
+
+        else:
+
+            combined = "; ".join([m for ok, m in [(ok1, msg1), (ok2, msg2)] if not ok])
+
+            self.save_status.show(f"⚠️ Lưu chưa trọn vẹn: {combined}", "error")
 
 
 

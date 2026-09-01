@@ -1365,3 +1365,116 @@ def get_latest_vanco_tdm(msyt):
     except Exception as e:
         logger.error(f"Loi tai du lieu TDM Vancomycin gan nhat cua {msyt}: {e}")
         return None
+
+
+# ==========================================
+# 6. TDM VANCOMYCIN — TACH RIENG "TRANG THAI HIEN TAI" VA "LICH SU KET QUA"
+#    (bo sung theo yeu cau: thong tin BN + lieu dung chi luu ban moi nhat, con
+#    KET QUA cua MOI lan chay Bayes phai duoc luu day du, KHONG bi de len nhau)
+#
+#    Can tao 2 bang sau tren Supabase (SQL Editor), truoc khi dung tinh nang nay:
+#
+#    create table vanco_patient_current (
+#        msyt text primary key,
+#        age float, gender text, height float, weight float, scr float, is_dialysis int,
+#        doses_json jsonb,
+#        updated_at timestamp default now()
+#    );
+#
+#    create table vanco_results_history (
+#        id bigserial primary key,
+#        msyt text not null,
+#        tdm_date text,
+#        q_prior float, cl_prior float, vc_prior float, vp_prior float,
+#        c_obs float, t_obs text, t_inf float,
+#        cl_optimized float, vc_optimized float, vp_optimized float,
+#        c_pred_final float, ofv_final float,
+#        auc_current float,
+#        created_at timestamp default now()
+#    );
+# ==========================================
+def save_vanco_patient_current(msyt, age, gender, height, weight, scr, is_dialysis, doses_json):
+    """Luu (upsert theo msyt) thong tin benh nhan + lich su lieu dung MOI NHAT.
+    Moi lan luu se GHI DE ban truoc do (chi giu 1 ban ghi / benh nhan) - dung
+    de Tab 4 luon nap lai duoc dung che do lieu cua lan TDM gan nhat."""
+    if not supabase:
+        return False, "Chua ket noi duoc Cloud Database!"
+    try:
+        data = {
+            "msyt": msyt, "age": age, "gender": gender, "height": height, "weight": weight,
+            "scr": scr, "is_dialysis": is_dialysis, "doses_json": doses_json,
+        }
+        supabase.table("vanco_patient_current").upsert(data, on_conflict="msyt").execute()
+        return True, "Da luu thong tin benh nhan + lieu dung (ban moi nhat) len Cloud."
+    except Exception as e:
+        logger.error(f"Loi luu vanco_patient_current cho {msyt}: {e}")
+        return False, f"Loi luu thong tin benh nhan len Cloud: {e}"
+
+
+def get_vanco_patient_current(msyt):
+    """Lay thong tin benh nhan + lich su lieu dung MOI NHAT theo MSYT. Tra ve dict hoac None."""
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("vanco_patient_current").select("*").eq("msyt", msyt).execute()
+        if res.data:
+            return res.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Loi tai vanco_patient_current cho {msyt}: {e}")
+        return None
+
+
+def save_vanco_result_history(msyt, tdm_date, q_prior, cl_prior, vc_prior, vp_prior,
+                               c_obs, t_obs, t_inf, cl_optimized, vc_optimized, vp_optimized,
+                               c_pred_final, ofv_final, auc_current):
+    """LUON THEM MOI (khong upsert/ghi de) 1 ban ghi ket qua cho MOI lan chay Bayes.
+    Dam bao toan bo lich su cac lan TDM deu duoc luu lai day du, khong bi mat du lieu
+    lan truoc khi thuc hien TDM lai."""
+    if not supabase:
+        return False, "Chua ket noi duoc Cloud Database!"
+    try:
+        data = {
+            "msyt": msyt, "tdm_date": tdm_date,
+            "q_prior": q_prior, "cl_prior": cl_prior, "vc_prior": vc_prior, "vp_prior": vp_prior,
+            "c_obs": c_obs, "t_obs": t_obs, "t_inf": t_inf,
+            "cl_optimized": cl_optimized, "vc_optimized": vc_optimized, "vp_optimized": vp_optimized,
+            "c_pred_final": c_pred_final, "ofv_final": ofv_final,
+            "auc_current": auc_current,
+        }
+        supabase.table("vanco_results_history").insert(data).execute()
+        return True, f"Da luu ket qua TDM Vancomycin (lan chay ngay {tdm_date}) vao lich su."
+    except Exception as e:
+        logger.error(f"Loi luu vanco_results_history cho {msyt}: {e}")
+        return False, f"Loi luu lich su ket qua len Cloud: {e}"
+
+
+def get_vanco_results_history(msyt):
+    """Lay TOAN BO lich su ket qua TDM Vancomycin (moi lan chay Bayes) theo MSYT,
+    sap xep tu gan nhat den cu nhat. Tra ve DataFrame."""
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        res = (supabase.table("vanco_results_history").select("*").eq("msyt", msyt)
+               .order("created_at", desc=True).execute())
+        return pd.DataFrame(res.data)
+    except Exception as e:
+        logger.error(f"Loi tai vanco_results_history cho {msyt}: {e}")
+        return pd.DataFrame()
+
+
+def get_latest_vanco_result(msyt):
+    """Lay ket qua TDM Vancomycin CUA LAN GAN NHAT (moi nhat theo created_at) theo MSYT.
+    Dung de hien thi nhanh CLbn/Vc_post/Vp_post/AUC hien tai cua lan TDM truoc khi
+    nguoi dung go MSYT. Tra ve dict hoac None."""
+    if not supabase:
+        return None
+    try:
+        res = (supabase.table("vanco_results_history").select("*").eq("msyt", msyt)
+               .order("created_at", desc=True).limit(1).execute())
+        if res.data:
+            return res.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Loi tai ket qua TDM Vancomycin gan nhat cho {msyt}: {e}")
+        return None
