@@ -644,3 +644,59 @@ def get_specific_tdm_block(msyt, date_str):
 
         return None
 
+
+
+# ==========================================
+# 5. TDM VANCOMYCIN (BAYES CA THE HOA - mo hinh 2 ngan, Tab 4)
+#    Bang rieng "vanco_tdm_history", KHONG dung chung voi du lieu Aminoglycosid.
+#    Can tao bang nay tren Supabase truoc khi luu (chay 1 lan trong SQL Editor):
+#
+#    create table vanco_tdm_history (
+#        id bigserial primary key,
+#        msyt text not null,
+#        tdm_date date not null,
+#        age float, gender text, height float, weight float, scr float, is_dialysis int,
+#        q_prior float, cl_prior float, vc_prior float, vp_prior float,
+#        doses_json jsonb,
+#        c_obs float, t_obs text, t_inf float,
+#        cl_optimized float, vc_optimized float, vp_optimized float,
+#        c_pred_final float, ofv_final float,
+#        created_at timestamp default now(),
+#        unique (msyt, tdm_date)
+#    );
+# ==========================================
+def save_vanco_tdm(msyt, tdm_date, age, gender, height, weight, scr, is_dialysis,
+                    q_prior, cl_prior, vc_prior, vp_prior, doses_json,
+                    c_obs, t_obs, t_inf, cl_optimized, vc_optimized, vp_optimized,
+                    c_pred_final, ofv_final):
+    """Luu (upsert) mot block ket qua TDM Vancomycin len Cloud. Tra ve (success, message)."""
+    if not supabase:
+        return False, "Chua ket noi duoc Cloud Database!"
+    try:
+        data = {
+            "msyt": msyt, "tdm_date": tdm_date,
+            "age": age, "gender": gender, "height": height, "weight": weight,
+            "scr": scr, "is_dialysis": is_dialysis,
+            "q_prior": q_prior, "cl_prior": cl_prior, "vc_prior": vc_prior, "vp_prior": vp_prior,
+            "doses_json": doses_json,
+            "c_obs": c_obs, "t_obs": t_obs, "t_inf": t_inf,
+            "cl_optimized": cl_optimized, "vc_optimized": vc_optimized, "vp_optimized": vp_optimized,
+            "c_pred_final": c_pred_final, "ofv_final": ofv_final,
+        }
+        supabase.table("vanco_tdm_history").upsert(data, on_conflict="msyt,tdm_date").execute()
+        return True, f"Da luu ket qua TDM Vancomycin len Cloud cho ngay {tdm_date}."
+    except Exception as e:
+        logger.error(f"Loi luu du lieu TDM Vancomycin len Cloud: {e}")
+        return False, f"Loi luu du lieu len Cloud: {e}"
+
+
+def get_vanco_history_by_msyt(msyt):
+    """Lay DataFrame lich su TDM Vancomycin cua 1 benh nhan theo MSYT."""
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        res = supabase.table("vanco_tdm_history").select("*").eq("msyt", msyt).execute()
+        return pd.DataFrame(res.data)
+    except Exception as e:
+        logger.error(f"Loi tai lich su TDM Vancomycin cua {msyt}: {e}")
+        return pd.DataFrame()
