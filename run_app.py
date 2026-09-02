@@ -34,7 +34,11 @@ COPYRIGHT_EMAIL = "thienphankh28@gmail.com"
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-aminoglycosid-win/refs/heads/main/version.json"
 GITHUB_CODE_BASE_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-aminoglycosid-win/main/"
 
-FILES_TO_UPDATE = ["app.py", "database.py", "pk_calculations.py", "vanco_calculations.py", "version.json"]
+FILES_TO_UPDATE = [
+    "app.py", "ui_common.py", "login_frame.py",
+    "tab1_aminoglycosid.py", "tab2_patient_db.py", "tab3_info.py", "tab4_vancomycin.py",
+    "database.py", "pk_calculations.py", "vanco_calculations.py", "version.json",
+]
 
 # ---------------------------------------------------------
 # XÁC ĐỊNH THƯ MỤC DỮ LIỆU (BASE_DIR) VÀ THƯ MỤC BUNDLE GỐC
@@ -185,7 +189,9 @@ def launch_desktop_app():
 
     # Nếu app đã được import trước đó (ví dụ do bundle), xóa cache để đảm bảo
     # phiên bản mới nhất trên đĩa (BASE_DIR) được nạp lại.
-    for mod_name in ("app", "database", "pk_calculations"):
+    for mod_name in ("app", "ui_common", "login_frame", "tab1_aminoglycosid",
+                     "tab2_patient_db", "tab3_info", "tab4_vancomycin",
+                     "database", "pk_calculations", "vanco_calculations"):
         if mod_name in sys.modules:
             del sys.modules[mod_name]
 
