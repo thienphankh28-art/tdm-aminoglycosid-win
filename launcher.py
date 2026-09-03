@@ -12,12 +12,7 @@ import runpy
 GITHUB_REPO_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-aminoglycosid-win/main" 
 
 FILES_TO_UPDATE = [
-    "app.py",
-    "database.py",
     "run_app.py",
-    "pk_calculations.py",
-    "vanco_calculations.py",
-    "version.json"
 ]
 
 def get_base_dir():
