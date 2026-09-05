@@ -1,0 +1,73 @@
+[2026-09-03 19:53:30] ==================================================
+[2026-09-03 19:53:30]   PHẦN MỀM TDM AMINOGLYCOSID - vV.2.0.21
+[2026-09-03 19:53:30]   Bản quyền thuộc về: thienphankh28@gmail.com
+[2026-09-03 19:53:30]   Thư mục dữ liệu (BASE_DIR): D:\tdmaminoglycosid\ver 8\claude viết tích hợp vancomycin bayest\lưu 4\files\dist
+[2026-09-03 19:53:30] ==================================================
+[2026-09-03 19:53:30] Đang kiểm tra cập nhật từ máy chủ...
+[2026-09-03 19:53:31] ✨ Phát hiện phiên bản mới: V.2.0.23. Đang tiến hành cập nhật...
+[2026-09-03 19:53:31] ✅ Đã cập nhật xong file: app.py
+[2026-09-03 19:53:32] ✅ Đã cập nhật xong file: ui_common.py
+[2026-09-03 19:53:32] ✅ Đã cập nhật xong file: login_frame.py
+[2026-09-03 19:53:33] ✅ Đã cập nhật xong file: tab1_aminoglycosid.py
+[2026-09-03 19:53:33] ✅ Đã cập nhật xong file: tab2_patient_db.py
+[2026-09-03 19:53:34] ✅ Đã cập nhật xong file: tab3_info.py
+[2026-09-03 19:53:34] ✅ Đã cập nhật xong file: tab4_vancomycin.py
+[2026-09-03 19:53:35] ✅ Đã cập nhật xong file: database.py
+[2026-09-03 19:53:35] ✅ Đã cập nhật xong file: pk_calculations.py
+[2026-09-03 19:53:36] ✅ Đã cập nhật xong file: vanco_calculations.py
+[2026-09-03 19:53:36] ✅ Đã cập nhật xong file: version.json
+[2026-09-03 19:53:36] ✅ Cập nhật phần mềm thành công!
+[2026-09-03 19:55:20] ==================================================
+[2026-09-03 19:55:20]   PHẦN MỀM TDM AMINOGLYCOSID - vV.2.0.23
+[2026-09-03 19:55:20]   Bản quyền thuộc về: thienphankh28@gmail.com
+[2026-09-03 19:55:20]   Thư mục dữ liệu (BASE_DIR): D:\tdmaminoglycosid\ver 8\claude viết tích hợp vancomycin bayest\lưu 4\files\dist
+[2026-09-03 19:55:20] ==================================================
+[2026-09-03 19:55:20] Đang kiểm tra cập nhật từ máy chủ...
+[2026-09-03 19:55:20] ℹ️ Phần mềm đang ở phiên bản mới nhất.
+[2026-09-03 20:00:01] ==================================================
+[2026-09-03 20:00:01]   PHẦN MỀM TDM AMINOGLYCOSID - vV.2.0.22
+[2026-09-03 20:00:01]   Bản quyền thuộc về: thienphankh28@gmail.com
+[2026-09-03 20:00:01]   Thư mục dữ liệu (BASE_DIR): D:\tdmaminoglycosid\ver 8\claude viết tích hợp vancomycin bayest\lưu 4\files\dist
+[2026-09-03 20:00:01] ==================================================
+[2026-09-03 20:00:01] Đang kiểm tra cập nhật từ máy chủ...
+[2026-09-03 20:00:01] ✨ Phát hiện phiên bản mới: V.2.0.23. Đang tiến hành cập nhật...
+[2026-09-03 20:00:02] ✅ Đã cập nhật xong file: app.py
+[2026-09-03 20:00:03] ✅ Đã cập nhật xong file: ui_common.py
+[2026-09-03 20:00:03] ✅ Đã cập nhật xong file: login_frame.py
+[2026-09-03 20:00:04] ✅ Đã cập nhật xong file: tab1_aminoglycosid.py
+[2026-09-03 20:00:04] ✅ Đã cập nhật xong file: tab2_patient_db.py
+[2026-09-03 20:00:04] ✅ Đã cập nhật xong file: tab3_info.py
+[2026-09-03 20:00:05] ✅ Đã cập nhật xong file: tab4_vancomycin.py
+[2026-09-03 20:00:05] ✅ Đã cập nhật xong file: database.py
+[2026-09-03 20:00:06] ✅ Đã cập nhật xong file: pk_calculations.py
+[2026-09-03 20:00:07] ✅ Đã cập nhật xong file: vanco_calculations.py
+[2026-09-03 20:00:07] ✅ Đã cập nhật xong file: version.json
+[2026-09-03 20:00:07] ✅ Cập nhật phần mềm thành công!
+[2026-09-04 07:47:53] ==================================================
+[2026-09-04 07:47:53]   PHẦN MỀM TDM AMINOGLYCOSID - vV.2.0.23
+[2026-09-04 07:47:53]   Bản quyền thuộc về: thienphankh28@gmail.com
+[2026-09-04 07:47:53]   Thư mục dữ liệu (BASE_DIR): D:\tdmaminoglycosid\ver 8\claude viết tích hợp vancomycin bayest\lưu 4\files\dist
+[2026-09-04 07:47:53] ==================================================
+[2026-09-04 07:47:53] Đang kiểm tra cập nhật từ máy chủ...
+[2026-09-04 07:47:53] ℹ️ Phần mềm đang ở phiên bản mới nhất.
+[2026-09-04 22:11:39] ==================================================
+[2026-09-04 22:11:39]   PHẦN MỀM TDM AMINOGLYCOSID - vV.2.0.23
+[2026-09-04 22:11:39]   Bản quyền thuộc về: thienphankh28@gmail.com
+[2026-09-04 22:11:39]   Thư mục dữ liệu (BASE_DIR): D:\tdmaminoglycosid\ver 8\claude viết tích hợp vancomycin bayest\lưu 4\files\dist
+[2026-09-04 22:11:39] ==================================================
+[2026-09-04 22:11:39] Đang kiểm tra cập nhật từ máy chủ...
+[2026-09-04 22:11:40] ℹ️ Phần mềm đang ở phiên bản mới nhất.
+[2026-09-04 22:29:04] ==================================================
+[2026-09-04 22:29:04]   PHẦN MỀM TDM AMINOGLYCOSID - vV.2.0.23
+[2026-09-04 22:29:04]   Bản quyền thuộc về: thienphankh28@gmail.com
+[2026-09-04 22:29:04]   Thư mục dữ liệu (BASE_DIR): D:\tdmaminoglycosid\ver 8\claude viết tích hợp vancomycin bayest\lưu 4\files\dist
+[2026-09-04 22:29:04] ==================================================
+[2026-09-04 22:29:04] Đang kiểm tra cập nhật từ máy chủ...
+[2026-09-04 22:29:05] ℹ️ Phần mềm đang ở phiên bản mới nhất.
+[2026-09-05 08:21:35] ==================================================
+[2026-09-05 08:21:35]   PHẦN MỀM TDM AMINOGLYCOSID - vV.2.0.23
+[2026-09-05 08:21:35]   Bản quyền thuộc về: thienphankh28@gmail.com
+[2026-09-05 08:21:35]   Thư mục dữ liệu (BASE_DIR): D:\tdmaminoglycosid\ver 8\claude viết tích hợp vancomycin bayest\lưu 4\files\dist
+[2026-09-05 08:21:35] ==================================================
+[2026-09-05 08:21:35] Đang kiểm tra cập nhật từ máy chủ...
+[2026-09-05 08:21:36] ℹ️ Phần mềm đang ở phiên bản mới nhất.
