@@ -40,7 +40,7 @@ from vanco_calculations import (
 
     VancoPatientInfo, VancoDose, VancoMeasurement,
 
-    compute_population_priors, solve_bayesian_posterior,
+    compute_population_priors,
 
     simulate_concentration_curve,
 
@@ -53,6 +53,8 @@ from vanco_calculations import (
     compute_crcl_weight_vanco, compute_scr_mgdl, compute_scr_corrected,
 
     compute_crcl_vanco, compute_crcl_capped,
+    group_measurements_by_dose_block, solve_bayesian_sequential, find_nearest_scr,
+    recompute_cl_prior_goti, recompute_cl_prior_collin,
 
 )
 
@@ -296,6 +298,64 @@ class VancoDoseRow(ctk.CTkFrame):
 
 
 
+class VancoScrRow(ctk.CTkFrame):
+    """Một dòng nhập SCr: Giá trị SCr + Thời điểm đo + nút xóa (hỗ trợ nhiều lần đo SCr)."""
+
+    def __init__(self, master, on_remove, scr_default=80.0, dt_default=None, **kwargs):
+        super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
+        dt_default = dt_default or datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
+        self.scr_var = ctk.StringVar(value=str(scr_default))
+        self.dt_var = ctk.StringVar(value=dt_default.strftime("%Y-%m-%d %H:%M"))
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=6)
+        ctk.CTkLabel(row, text="SCr:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(row, textvariable=self.scr_var, width=70).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(row, text="Thời điểm đo:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(row, textvariable=self.dt_var, width=130).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(row, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(row, text="🗑", width=32, fg_color="#d1242f", hover_color="#a01c24",
+                      command=lambda: on_remove(self)).pack(side="left")
+
+    def open_calendar(self):
+        current_dt = parse_vanco_datetime(self.dt_var.get())
+        DateTimePickerWindow(self, initial_dt=current_dt, callback=lambda dt: self.dt_var.set(dt.strftime("%Y-%m-%d %H:%M")))
+
+    def get_scr(self):
+        return parse_float(self.scr_var.get(), 0.0), parse_vanco_datetime(self.dt_var.get())
+
+
+class VancoMeasRow(ctk.CTkFrame):
+    """Một dòng nhập điểm đo nồng độ: Cobs + Tobs + Tinf + nút xóa (hỗ trợ nhiều điểm đo)."""
+
+    def __init__(self, master, on_remove, cobs_default=15.0, tinf_default=1.0, dt_default=None, **kwargs):
+        super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
+        dt_default = dt_default or datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
+        self.cobs_var = ctk.StringVar(value=str(cobs_default))
+        self.dt_var = ctk.StringVar(value=dt_default.strftime("%Y-%m-%d %H:%M"))
+        self.tinf_var = ctk.StringVar(value=str(tinf_default))
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=6)
+        ctk.CTkLabel(row, text="Cobs (μg/mL):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(row, textvariable=self.cobs_var, width=65).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(row, text="Tobs:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(row, textvariable=self.dt_var, width=130).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(row, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row, text="Tinf (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(row, textvariable=self.tinf_var, width=45).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(row, text="🗑", width=32, fg_color="#d1242f", hover_color="#a01c24",
+                      command=lambda: on_remove(self)).pack(side="left")
+
+    def open_calendar(self):
+        current_dt = parse_vanco_datetime(self.dt_var.get())
+        DateTimePickerWindow(self, initial_dt=current_dt, callback=lambda dt: self.dt_var.set(dt.strftime("%Y-%m-%d %H:%M")))
+
+    def get_measurement(self):
+        cobs = parse_float(self.cobs_var.get(), 0.0)
+        t_obs = parse_vanco_datetime(self.dt_var.get())
+        tinf = parse_float(self.tinf_var.get(), 1.0)
+        return VancoMeasurement(c_obs=cobs, t_obs=t_obs, t_inf_h=tinf)
+
+
 class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
     """
@@ -315,7 +375,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self.app = app
 
         self.dose_rows = []
-
+        self.scr_rows = []
+        self.meas_rows = []
         self.priors = None
 
         self.prior_details = None
@@ -349,8 +410,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         now = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
 
         self._add_dose_row(dose_default=1000.0, tau_default=12.0, dt_default=now)
-
         self._add_dose_row(dose_default=1000.0, tau_default=12.0, dt_default=now + datetime.timedelta(hours=12))
+        self._add_scr_row(scr_default=80.0, dt_default=now)
+        self._add_meas_row(cobs_default=15.0, tinf_default=1.0, dt_default=now + datetime.timedelta(hours=13))
 
 
 
@@ -505,9 +567,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         self.v_weight_entry.pack(fill="x")
 
-        self.v_scr_entry = LabeledEntry(c2, "SCr (μmol/L hoặc mg/dL)", default=80.0)
-
-        self.v_scr_entry.pack(fill="x")
+        ctk.CTkLabel(c2, text="SCr (μmol/L hoặc mg/dL): xem Mục 1b bên dưới (hỗ trợ nhiều lần đo)",
+                     font=FONT_SMALL, text_color=("gray45", "gray65"), wraplength=250,
+                     justify="left").pack(fill="x", pady=(6, 0))
 
 
 
@@ -523,7 +585,12 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self.v_malignancy_check = LabeledCheck(c3, "Bệnh máu ác tính (STDY10)", default=False)
         self.v_heelprick_check = LabeledCheck(c3, "Mẫu lấy gót chân - Heel-prick (STDY13)", default=False)
 
-
+        ctk.CTkLabel(self, text="1b. Các lần đo SCr (Creatinin huyết thanh)", font=FONT_SMALL,
+                     text_color=("gray30", "gray80")).pack(anchor="w", padx=6, pady=(14, 4))
+        self.scr_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.scr_container.pack(fill="x", padx=6)
+        ctk.CTkButton(self, text="➕ Thêm lần đo SCr", height=30, width=150,
+                      command=lambda: self._add_scr_row()).pack(anchor="w", padx=6, pady=(6, 4))
 
         ttk.Separator(self, orient="horizontal").pack(fill="x", padx=6, pady=14)
 
@@ -605,7 +672,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
             weight_kg=self.v_weight_entry.get_float(60.0),
 
-            scr_value=self.v_scr_entry.get_float(80.0),
+            scr_value=self._get_representative_scr(),
 
             is_dialysis=self.v_dialysis_check.get(),
 
@@ -619,7 +686,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             gender=self.v_gender_opt.get(),
             height_cm=self.v_height_entry.get_float(165.0),
             weight_kg=self.v_weight_entry.get_float(60.0),
-            scr_value=self.v_scr_entry.get_float(80.0),
+            scr_value=self._get_representative_scr(),
             is_malignancy=self.v_malignancy_check.get(),
             is_heelprick=self.v_heelprick_check.get(),
         )
@@ -696,21 +763,29 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
             self.v_weight_entry.set(record.get("weight"))
 
-        if record.get("scr") is not None:
-
-            self.v_scr_entry.set(record.get("scr"))
-
         self.v_dialysis_check.set(bool(record.get("is_dialysis")))
-        loaded_method = record.get("method") or "Goti 2018"
-        self.method_var.set(loaded_method)
+        self.method_var.set(record.get("method") or "Goti 2018")
         self.v_malignancy_check.set(bool(record.get("is_malignancy")))
         self.v_heelprick_check.set(bool(record.get("is_heelprick")))
         self.on_method_change()
-        loaded_method = record.get("method") or "Goti 2018"
-        self.method_var.set(loaded_method)
-        self.v_malignancy_check.set(bool(record.get("is_malignancy")))
-        self.v_heelprick_check.set(bool(record.get("is_heelprick")))
-        self.on_method_change()
+
+        # --- 1b) Các lần đo SCr đã nhập ở lần trước (scr_json); nếu chưa có thì dùng "scr" đơn cũ ---
+        scr_raw = record.get("scr_json") or []
+        if isinstance(scr_raw, str):
+            try:
+                scr_raw = json.loads(scr_raw)
+            except Exception:
+                scr_raw = []
+        for row in list(self.scr_rows):
+            self._remove_scr_row(row)
+        if scr_raw:
+            for item in scr_raw:
+                self._add_scr_row(scr_default=parse_float(item.get("scr"), 80.0),
+                                   dt_default=parse_vanco_datetime(item.get("measured_at")))
+        elif record.get("scr") is not None:
+            self._add_scr_row(scr_default=record.get("scr"))
+        else:
+            self._add_scr_row()
 
 
 
@@ -799,28 +874,28 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-            # Nạp Cobs/Tobs/Tinf của lần gần nhất (dòng đầu tiên) để tham khảo/chỉnh sửa
-
-            latest = df_history.iloc[0]
-
-            if pd.notnull(latest.get("c_obs")):
-
-                self.v_cobs_entry.set(latest.get("c_obs"))
-
-            if latest.get("t_obs"):
-
-                self.v_tobs_entry.delete(0, "end")
-
-                self.v_tobs_entry.insert(0, str(latest.get("t_obs")))
-
-            if pd.notnull(latest.get("t_inf")):
-
-                self.v_tinf_entry.set(latest.get("t_inf"))
+            pass  # (điểm đo được khôi phục từ measurements_json bên dưới, không phụ thuộc lịch sử)
 
 
+
+        # --- 4) Các điểm đo Cobs/Tobs/Tinf đã nhập ở lần trước (measurements_json) ---
+        meas_raw = record.get("measurements_json") or []
+        if isinstance(meas_raw, str):
+            try:
+                meas_raw = json.loads(meas_raw)
+            except Exception:
+                meas_raw = []
+        for row in list(self.meas_rows):
+            self._remove_meas_row(row)
+        if meas_raw:
+            for item in meas_raw:
+                self._add_meas_row(cobs_default=parse_float(item.get("c_obs"), 15.0),
+                                    tinf_default=parse_float(item.get("t_inf_h"), 1.0),
+                                    dt_default=parse_vanco_datetime(item.get("t_obs")))
+        else:
+            self._add_meas_row()
 
         # Tính lại priors ngay theo dữ liệu vừa tải để các thẻ Mục 2 cập nhật theo
-
         self.calc_priors()
 
 
@@ -984,74 +1059,70 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
     def _get_doses(self):
-
         doses = [r.get_dose() for r in self.dose_rows]
-
         doses.sort(key=lambda d: d.given_at)
-
         return doses
+
+    # --- Mục 1b: Các lần đo SCr (nhiều dòng) ---
+    def _add_scr_row(self, scr_default=80.0, dt_default=None):
+        row = VancoScrRow(self.scr_container, on_remove=self._remove_scr_row,
+                           scr_default=scr_default, dt_default=dt_default)
+        row.pack(fill="x", pady=3)
+        self.scr_rows.append(row)
+
+    def _remove_scr_row(self, row):
+        if row in self.scr_rows:
+            self.scr_rows.remove(row)
+        row.destroy()
+
+    def _get_scr_entries(self):
+        """Trả về list (scr_value, thời_điểm_đo) đã sắp xếp theo thời gian tăng dần."""
+        entries = [r.get_scr() for r in self.scr_rows]
+        entries.sort(key=lambda e: e[1])
+        return entries
+
+    def _get_representative_scr(self):
+        """SCr 'đại diện' hiện tại — dùng để hiển thị Mục 2 (priors nền tảng ban đầu) khi
+        chưa chạy tối ưu Bayes: lấy giá trị SCr có thời điểm đo GẦN NHẤT/MỚI NHẤT."""
+        entries = self._get_scr_entries()
+        return entries[-1][0] if entries else 80.0
 
 
 
     # ---------------------------------------------------------------
 
     def _build_measurement_section(self):
+        self._section_header("4. Nồng độ đo được (TDM) — hỗ trợ nhiều điểm đo")
+        ctk.CTkLabel(
+            self, text="Có thể nhập nhiều lần đo (nhiều lần TDM khác khoảng đưa liều, hoặc "
+                       "peak+trough cùng khoảng đưa liều). Nhấn '➕ Thêm điểm đo' để thêm dòng.",
+            font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left",
+        ).pack(anchor="w", padx=6, pady=(0, 6))
 
-        self._section_header("4. Nồng độ đo được (TDM)")
+        self.meas_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.meas_container.pack(fill="x", padx=6)
 
-        row = ctk.CTkFrame(self, fg_color="transparent")
-
-        row.pack(fill="x", padx=6)
-
-        row.grid_columnconfigure((0, 1, 2), weight=1, uniform="ms")
-
-        
-
-        self.v_cobs_entry = LabeledEntry(row, "Cobs — Nồng độ đo được (μg/mL)", default=15.0)
-
-        self.v_cobs_entry.grid(row=0, column=0, sticky="ew", padx=4)
-
-
-
-        # Tobs với popup lịch chọn ngày giờ
-
-        tobs_frame = ctk.CTkFrame(row, fg_color="transparent")
-
-        tobs_frame.grid(row=0, column=1, sticky="ew", padx=4)
-
-        ctk.CTkLabel(tobs_frame, text="Tobs — Thời điểm lấy mẫu (YYYY-MM-DD HH:MM)", font=FONT_SMALL).pack(anchor="w")
-
-        
-
-        tobs_sub = ctk.CTkFrame(tobs_frame, fg_color="transparent")
-
-        tobs_sub.pack(fill="x", pady=(2, 4))
-
-        self.v_tobs_entry = ctk.CTkEntry(tobs_sub)
-
-        self.v_tobs_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-        self.v_tobs_entry.insert(0, datetime.datetime.now().replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M"))
-
-        ctk.CTkButton(tobs_sub, text="📅", width=36, command=self.open_tobs_calendar).pack(side="left")
-
-
-
-        self.v_tinf_entry = LabeledEntry(row, "Tinf — Thời gian truyền mỗi liều (h)", default=1.0)
-
-        self.v_tinf_entry.grid(row=0, column=2, sticky="ew", padx=4)
-
-
+        ctk.CTkButton(self, text="➕ Thêm điểm đo", height=32, width=140,
+                      command=lambda: self._add_meas_row()).pack(anchor="w", padx=6, pady=(6, 4))
 
         ttk.Separator(self, orient="horizontal").pack(fill="x", padx=6, pady=14)
 
+    def _add_meas_row(self, cobs_default=15.0, tinf_default=1.0, dt_default=None):
+        row = VancoMeasRow(self.meas_container, on_remove=self._remove_meas_row,
+                            cobs_default=cobs_default, tinf_default=tinf_default, dt_default=dt_default)
+        row.pack(fill="x", pady=3)
+        self.meas_rows.append(row)
 
+    def _remove_meas_row(self, row):
+        if row in self.meas_rows:
+            self.meas_rows.remove(row)
+        row.destroy()
 
-    def open_tobs_calendar(self):
-
-        current_dt = parse_vanco_datetime(self.v_tobs_entry.get())
-
-        DateTimePickerWindow(self, initial_dt=current_dt, callback=lambda dt: self.v_tobs_entry.delete(0, 'end') or self.v_tobs_entry.insert(0, dt.strftime("%Y-%m-%d %H:%M")))
+    def _get_measurements(self):
+        """Trả về list VancoMeasurement đã sắp xếp theo Tobs tăng dần."""
+        measurements = [r.get_measurement() for r in self.meas_rows]
+        measurements.sort(key=lambda m: m.t_obs)
+        return measurements
 
 
 
@@ -1135,7 +1206,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(
 
-            row3, text="AUC hiện tại = Liều × 24 / (τ × Clbn) — tính theo LIỀU CUỐI CÙNG ở Mục 3",
+            row3, text="AUC hiện tại = Liều × 24 / (τ × Clbn) — tính theo LIỀU ĐANG DÙNG (liều kề trước các điểm đo của lần TDM cuối)",
 
             font=FONT_SMALL, text_color=("gray40", "gray70")
 
@@ -1151,157 +1222,109 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-    def _get_last_dose_row(self):
-
-        """Trả về VancoDoseRow có thời điểm truyền MUỘN NHẤT (liều cuối cùng ở Mục 3)."""
-
-        if not self.dose_rows:
-
+    def _find_dose_row_for(self, dose):
+        """Tìm VancoDoseRow tương ứng 1 VancoDose (khớp thời điểm given_at) để lấy τ."""
+        if dose is None:
             return None
-
-        return max(self.dose_rows, key=lambda r: r.get_dose().given_at)
-
-
+        for r in self.dose_rows:
+            if r.get_dose().given_at == dose.given_at:
+                return r
+        return None
 
     def calc_auc_current(self):
-
-        """AUC hiện tại = Liều (của liều cuối cùng ở Mục 3) × 24 / (τ của liều đó × Clbn
-
-        vừa tối ưu Bayes). Kết quả được lưu vào self.auc_current_value để dùng khi lưu Cloud."""
-
+        """AUC hiện tại = Liều đang dùng (liều neo — kề trước các điểm đo của LẦN TDM
+        cuối cùng vừa tối ưu) × 24 / (τ của liều đó × Clbn vừa tối ưu Bayes)."""
         if self.bayes_result is None or not self.bayes_result.success:
-
             self.card_auc_current.set_value("Chưa chạy solve Bayes")
-
             self.auc_current_value = None
-
             return None
 
-
-
-        last_row = self._get_last_dose_row()
-
-        if last_row is None:
-
+        anchor_dose = getattr(self.bayes_result, "anchor_dose", None)
+        anchor_row = self._find_dose_row_for(anchor_dose)
+        if anchor_row is None and self.dose_rows:
+            anchor_row = max(self.dose_rows, key=lambda r: r.get_dose().given_at)
+        if anchor_row is None:
             self.card_auc_current.set_value("Chưa có liều ở Mục 3")
-
             self.auc_current_value = None
-
             return None
 
-
-
-        last_dose = last_row.get_dose()
-
-        tau = last_row.get_tau()
-
+        dose_mg = anchor_row.get_dose().dose_mg
+        tau = anchor_row.get_tau()
         clbn = self.bayes_result.CL_optimized
-
         if tau <= 0 or clbn <= 0:
-
             self.card_auc_current.set_value("Giá trị không hợp lệ")
-
             self.auc_current_value = None
-
             return None
 
-
-
-        auc = (last_dose.dose_mg * 24.0) / (tau * clbn)
-
+        auc = (dose_mg * 24.0) / (tau * clbn)
         self.card_auc_current.set_value(f"{auc:.2f} mg·h/L")
-
         self.auc_current_value = auc
-
         return auc
 
-
-
     def run_bayes_solve(self):
-
         self.calc_priors()
-
         doses = self._get_doses()
-
         if not doses:
-
             self.solve_status.show("⚠️ Vui lòng nhập ít nhất 1 liều ở Mục 3.", "warning")
-
             return
 
-
-
-        tobs = parse_vanco_datetime(self.v_tobs_entry.get())
-
-        cobs = self.v_cobs_entry.get_float(0.0)
-
-        tinf = self.v_tinf_entry.get_float(1.0)
-
-        if cobs <= 0:
-
-            self.solve_status.show("⚠️ Cobs phải lớn hơn 0.", "warning")
-
+        measurements = self._get_measurements()
+        if not measurements or any(m.c_obs <= 0 for m in measurements):
+            self.solve_status.show("⚠️ Vui lòng nhập ít nhất 1 điểm đo hợp lệ (Cobs > 0) ở Mục 4.", "warning")
             return
 
+        scr_entries = self._get_scr_entries()
+        if not scr_entries:
+            self.solve_status.show("⚠️ Vui lòng nhập ít nhất 1 lần đo SCr ở Mục 1b.", "warning")
+            return
 
+        blocks, orphans = group_measurements_by_dose_block(measurements, doses)
+        if not blocks:
+            self.solve_status.show(
+                "⚠️ Không xác định được liều 'neo' cho (các) điểm đo — Tobs phải sau liều đầu tiên.", "warning")
+            return
 
-        measurement = VancoMeasurement(c_obs=cobs, t_obs=tobs, t_inf_h=tinf)
-        if self.method_var.get() == "Collin 2019":
+        method = self.method_var.get()
+        if method == "Collin 2019":
             sd, cv = COLLIN_SD, COLLIN_CV
+            patient = self._get_patient_collin()
+            recompute_cl_fn = lambda scr: recompute_cl_prior_collin(patient, scr)
         else:
-            sd = 0.34
-            cv = 0.227
+            sd, cv = 0.34, 0.227
+            patient = self._get_patient()
+            recompute_cl_fn = lambda scr: recompute_cl_prior_goti(patient, scr)
+        nearest_scr_fn = lambda t_obs: find_nearest_scr(scr_entries, t_obs)
 
-
-
-        result = solve_bayesian_posterior(self.priors, doses, measurement, sd=sd, cv=cv)
-
+        block_results = solve_bayesian_sequential(doses, blocks, self.priors, recompute_cl_fn,
+                                                    nearest_scr_fn, sd=sd, cv=cv)
+        self.block_results = block_results
+        result = block_results[-1] if block_results else None
         self.bayes_result = result
-
-        self.measurement_used = measurement
-
+        self.measurement_used = blocks[-1]["measurements"] if blocks else []
         self.doses_used = doses
 
-
-
-        if not result.success:
-
-            self.solve_status.show(f"❌ {result.message}", "error")
-
+        if result is None or not result.success:
+            msg = result.message if result else "Không có block dữ liệu hợp lệ."
+            self.solve_status.show(f"❌ {msg}", "error")
             return
 
-
-
-        self.solve_status.show(f"✅ {result.message}", "success")
-
+        n_orphan_note = f" (bỏ qua {len(orphans)} điểm đo trước liều đầu tiên)" if orphans else ""
+        n_block_note = f" — đã chạy tuần tự qua {len(block_results)} lần TDM (khoảng đưa liều)" if len(block_results) > 1 else ""
+        self.solve_status.show(f"✅ {result.message}{n_block_note}{n_orphan_note}", "success")
         self.card_cl_post.set_value(f"{result.CL_optimized:.4f}")
-
         self.card_vc_post.set_value(f"{result.Vc_optimized:.2f}")
-
         self.card_vp_post.set_value(f"{result.Vp_optimized:.2f}")
-
         self.card_cpred_final.set_value(f"{result.C_pred_final:.3f}")
-
         self.card_ofv_final.set_value(f"{result.OFV_final:.4f}")
-
         self.card_k10.set_value(f"{result.k10:.4f}")
-
         self.card_k12.set_value(f"{result.k12:.4f}")
-
         self.card_k21.set_value(f"{result.k21:.4f}")
-
         self.card_alpha.set_value(f"{result.alpha:.4f}")
-
         self.card_beta.set_value(f"{result.beta:.4f}")
 
-
-
         # Tự động tính AUC luôn nếu đã có thông số mới
-
         self.calc_auc()
-
         self.calc_auc_current()
-
         self.refresh_chart()
 
 
@@ -1430,14 +1453,13 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         r = self.bayes_result
         q = self.priors.q_prior if self.priors is not None else 6.5
+        meas_list = self.measurement_used or []
+        t_inf_for_curve = meas_list[0].t_inf_h if meas_list else 1.0
+        t_end = (max(m.t_obs for m in meas_list) if meas_list else datetime.datetime.now()) + datetime.timedelta(hours=6)
 
         times, concs = simulate_concentration_curve(
-
             r.CL_optimized, r.Vc_optimized, r.Vp_optimized, q,
-
-            self.doses_used, self.measurement_used.t_inf_h,
-
-            t_end=self.measurement_used.t_obs + datetime.timedelta(hours=6))
+            self.doses_used, t_inf_for_curve, t_end=t_end)
 
 
 
@@ -1463,9 +1485,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
             ax.plot(times, concs, color="#8250df", linewidth=2, label="Nồng độ dự đoán C(t) hậu nghiệm")
 
-        ax.scatter([self.measurement_used.t_obs], [self.measurement_used.c_obs],
-
-                   color="#d1242f", zorder=5, label=f"Cobs đo được ({self.measurement_used.c_obs:g} μg/mL)")
+        if meas_list:
+            ax.scatter([m.t_obs for m in meas_list], [m.c_obs for m in meas_list],
+                       color="#d1242f", zorder=5, label="Cobs đo được")
 
         ax.set_xlabel("Thời gian")
 
@@ -1607,16 +1629,20 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         gender_v = self.v_gender_opt.get()
         height_v = self.v_height_entry.get_float(165.0)
         weight_v = self.v_weight_entry.get_float(60.0)
-        scr_v = self.v_scr_entry.get_float(80.0)
+        scr_v = self._get_representative_scr()
         is_dialysis_v = int(self.v_dialysis_check.get()) if method != "Collin 2019" else 0
         is_malignancy_v = int(self.v_malignancy_check.get()) if method == "Collin 2019" else 0
         is_heelprick_v = int(self.v_heelprick_check.get()) if method == "Collin 2019" else 0
 
         r = self.bayes_result
-        m = self.measurement_used
+        m = self.measurement_used[-1]  # điểm đo gần nhất của lần TDM cuối cùng — đại diện lưu vào lịch sử
         date_str = m.t_obs.strftime("%Y-%m-%d")
         doses_payload = [{"dose_mg": d.dose_mg, "given_at": d.given_at.strftime("%Y-%m-%d %H:%M")}
                           for d in self.doses_used]
+        scr_payload = [{"scr": v, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
+                       for v, dt in self._get_scr_entries()]
+        meas_payload = [{"c_obs": mm.c_obs, "t_obs": mm.t_obs.strftime("%Y-%m-%d %H:%M"), "t_inf_h": mm.t_inf_h}
+                        for mm in self._get_measurements()]
 
         # Đảm bảo AUC hiện tại đã được tính theo dữ liệu mới nhất trước khi lưu
         auc_current = self.calc_auc_current()
@@ -1628,6 +1654,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             weight=weight_v, scr=scr_v, is_dialysis=is_dialysis_v,
             doses_json=doses_payload,
             method=method, is_malignancy=is_malignancy_v, is_heelprick=is_heelprick_v,
+            scr_json=scr_payload, measurements_json=meas_payload,
         )
 
         # --- 2) Kết quả lần TDM này: LUÔN THÊM MỚI vào lịch sử, không ghi đè ---

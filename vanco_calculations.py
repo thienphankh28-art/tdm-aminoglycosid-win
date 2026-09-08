@@ -291,10 +291,9 @@ class VancoBayesResult:
 
 
     success: bool
-
-
-
     message: str = ""
+    points: list = field(default_factory=list)  # [{"t_obs","c_obs","c_pred","ofv"}] mỗi điểm đo
+    anchor_dose: object = None  # VancoDose "đang dùng" (liều kề trước các điểm đo của block này)
 
 
 
@@ -935,54 +934,21 @@ def compute_sigma(c_pred: float, sd: float = 0.34, cv: float = 0.227) -> float:
 
 
 def compute_ofv(cl: float, vc: float, vp: float, priors: VancoPriors,
-
-
-
-                 doses: List[VancoDose], measurement: VancoMeasurement,
-
-
-
+                 doses: List[VancoDose], measurements: List[VancoMeasurement],
                  sd: float = 0.34, cv: float = 0.227) -> float:
-
-
-
-    """Hàm mục tiêu Bayes (OFV) — tổng phạt log-normal của 3 tham số + phạt sai số dư
-
-
-
-    giữa nồng độ đo được và nồng độ dự đoán."""
-
-
-
-    c_pred = compute_cpred_two_compartment(cl, vc, vp, priors.q_prior, doses,
-
-
-
-                                            measurement.t_obs, measurement.t_inf_h)
-
-
-
-    sigma = compute_sigma(c_pred, sd, cv)
-
-
-
+    """Hàm mục tiêu Bayes (OFV) — tổng phạt log-normal của 3 tham số + tổng phạt sai số dư
+    của TỪNG điểm đo (hỗ trợ nhiều điểm đo Cobs/Tobs cùng lúc):
+        OFV_tổng = OFV_CL + OFV_Vc + OFV_Vp + Σ_i (Cobs_i - Cpred_i)^2 / sigma_i^2
+    (measurements có thể chỉ gồm 1 điểm — khi đó tương đương công thức gốc)."""
     ofv_cl = ((np.log(cl) - np.log(priors.cl_prior)) ** 2) / (priors.omega_cl ** 2)
-
-
-
     ofv_vc = ((np.log(vc) - np.log(priors.vc_prior)) ** 2) / (priors.omega_vc ** 2)
-
-
-
     ofv_vp = ((np.log(vp) - np.log(priors.vp_prior)) ** 2) / (priors.omega_vp ** 2)
-
-
-
-    ofv_c = ((measurement.c_obs - c_pred) ** 2) / (sigma ** 2)
-
-
-
-    return ofv_cl + ofv_vc + ofv_vp + ofv_c
+    ofv_points = 0.0
+    for m in measurements:
+        c_pred = compute_cpred_two_compartment(cl, vc, vp, priors.q_prior, doses, m.t_obs, m.t_inf_h)
+        sigma = compute_sigma(c_pred, sd, cv)
+        ofv_points += ((m.c_obs - c_pred) ** 2) / (sigma ** 2)
+    return ofv_cl + ofv_vc + ofv_vp + ofv_points
 
 
 
@@ -1007,33 +973,12 @@ def compute_ofv(cl: float, vc: float, vp: float, priors: VancoPriors,
 
 
 def solve_bayesian_posterior(priors: VancoPriors,
-
-
-
                               doses: List[VancoDose],
-
-
-
-                              measurement: VancoMeasurement,
-
-
-
+                              measurements,
                               sd: float = 0.34,
-
-
-
                               cv: float = 0.227,
-
-
-
                               cl_min: float = 0.1,
-
-
-
                               vc_min: float = 5.0,
-
-
-
                               vp_min: float = 1.0) -> VancoBayesResult:
 
 
@@ -1086,43 +1031,20 @@ def solve_bayesian_posterior(priors: VancoPriors,
 
 
 
+    measurements = [measurements] if isinstance(measurements, VancoMeasurement) else list(measurements)
     if not doses:
-
-
-
         return VancoBayesResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, False,
-
-
-
                                  "Chưa có dữ liệu lịch sử liều dùng để tính toán.")
-
-
-
-
-
-
+    if not measurements:
+        return VancoBayesResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, False,
+                                 "Chưa có điểm đo Cobs/Tobs nào để tính toán.")
 
     x0 = np.array([priors.cl_prior, priors.vc_prior, priors.vp_prior], dtype=float)
-
-
-
     bounds = [(cl_min, None), (vc_min, None), (vp_min, None)]
 
-
-
-
-
-
-
     def objective(x):
-
-
-
         cl, vc, vp = x
-
-
-
-        return compute_ofv(cl, vc, vp, priors, doses, measurement, sd, cv)
+        return compute_ofv(cl, vc, vp, priors, doses, measurements, sd, cv)
 
 
 
@@ -1191,45 +1113,24 @@ def solve_bayesian_posterior(priors: VancoPriors,
 
 
     cl_opt, vc_opt, vp_opt = best_result.x
-
-
-
-    c_pred_final = compute_cpred_two_compartment(cl_opt, vc_opt, vp_opt, priors.q_prior,
-
-
-
-                                                  doses, measurement.t_obs, measurement.t_inf_h)
-
-
-
     k10, k12, k21, alpha, beta = compute_hybrid_constants(cl_opt, vc_opt, vp_opt, priors.q_prior)
 
-
-
-
-
-
+    # Cpred + OFV riêng cho TỪNG điểm đo (yêu cầu #3) — sắp theo thời gian đo tăng dần
+    measurements_sorted = sorted(measurements, key=lambda m: m.t_obs)
+    points = []
+    for m in measurements_sorted:
+        c_pred_i = compute_cpred_two_compartment(cl_opt, vc_opt, vp_opt, priors.q_prior,
+                                                   doses, m.t_obs, m.t_inf_h)
+        sigma_i = compute_sigma(c_pred_i, sd, cv)
+        ofv_i = ((m.c_obs - c_pred_i) ** 2) / (sigma_i ** 2)
+        points.append({"t_obs": m.t_obs, "c_obs": m.c_obs, "c_pred": float(c_pred_i), "ofv": float(ofv_i)})
+    c_pred_final = points[-1]["c_pred"] if points else 0.0  # Cpred tại điểm đo gần nhất (để tương thích hiển thị cũ)
 
     return VancoBayesResult(
-
-
-
         CL_optimized=float(cl_opt), Vc_optimized=float(vc_opt), Vp_optimized=float(vp_opt),
-
-
-
         C_pred_final=float(c_pred_final), OFV_final=float(best_result.fun),
-
-
-
         k10=float(k10), k12=float(k12), k21=float(k21), alpha=float(alpha), beta=float(beta),
-
-
-
-        success=True, message="Đã hội tụ thành công."
-
-
-
+        success=True, message="Đã hội tụ thành công.", points=points
     )
 
 
@@ -1622,3 +1523,106 @@ def compute_population_priors_collin(patient: VancoPatientInfoCollin) -> Tuple[V
         "v1_prior": v1_prior, "v2_prior": v2_prior, "q2_prior": q2_prior,
     }
     return priors, details
+
+
+# ==========================================
+# 7. NHIỀU ĐIỂM ĐO / NHIỀU LẦN TDM (Sequential Bayesian forecasting theo occasion)
+#    — nhóm các điểm đo theo "khoảng đưa liều" (tau) đang hiệu lực tại thời điểm đo,
+#    rồi chạy tối ưu Bayes TUẦN TỰ qua từng khoảng: khoảng sau dùng Vc/Vp/Q hậu nghiệm
+#    của khoảng trước làm tiền nghiệm, riêng CL được tính lại từ SCr gần nhất với Tobs
+#    của khoảng đó theo đúng mô hình quần thể (Goti 2018 hoặc Collin 2019) đang chọn.
+# ==========================================
+
+def find_nearest_scr(scr_entries, t_obs):
+    """scr_entries: list các (scr_value, thời_điểm_đo). Trả về scr_value của bản ghi có
+    thời điểm đo GẦN t_obs NHẤT (chênh lệch tuyệt đối nhỏ nhất). None nếu rỗng."""
+    if not scr_entries:
+        return None
+    return min(scr_entries, key=lambda e: abs((e[1] - t_obs).total_seconds()))[0]
+
+
+def recompute_cl_prior_goti(patient: VancoPatientInfo, scr_value: float) -> float:
+    """Tính lại CL_prior theo mô hình Goti 2018 nhưng dùng một giá trị SCr KHÁC (của lần
+    đo gần với Tobs của một khoảng đưa liều cụ thể) — các hiệp biến còn lại (tuổi, giới
+    tính, cân nặng, lọc máu) giữ nguyên theo thông tin bệnh nhân."""
+    ibw = compute_ibw_vanco(patient.gender, patient.height_cm)
+    bmi = compute_bmi_vanco(patient.weight_kg, patient.height_cm)
+    adjbw = compute_adjbw_vanco(patient.weight_kg, ibw)
+    weight_cg = compute_crcl_weight_vanco(patient.weight_kg, ibw, adjbw, bmi)
+    scr_mgdl = compute_scr_mgdl(scr_value)
+    scr_corr = compute_scr_corrected(scr_mgdl, patient.age)
+    crcl = compute_crcl_vanco(patient.age, patient.gender, weight_cg, scr_corr)
+    crcl_capped = compute_crcl_capped(crcl)
+    return compute_cl_prior(crcl_capped, patient.is_dialysis)
+
+
+def recompute_cl_prior_collin(patient: VancoPatientInfoCollin, scr_value: float) -> float:
+    """Tương tự recompute_cl_prior_goti() nhưng theo mô hình Collin 2019."""
+    pma_weeks = compute_pma_weeks_collin(patient.age)
+    f_mat = compute_f_mat_collin(pma_weeks)
+    f_decline = compute_f_decline_collin(patient.weight_kg)
+    v1_prior = compute_v1_prior_collin(patient.weight_kg, patient.is_heelprick)
+    scr_mgdl = compute_scr_mgdl(scr_value)
+    f_scr = compute_f_scr_collin(scr_mgdl, patient.age)
+    return compute_cl_prior_collin(v1_prior, f_mat, f_decline, f_scr, patient.is_malignancy)
+
+
+def group_measurements_by_dose_block(measurements: List[VancoMeasurement], doses: List[VancoDose]):
+    """Gom các điểm đo (Cobs/Tobs) theo 'khoảng đưa liều' (tau) đang hiệu lực tại Tobs.
+    Với mỗi điểm đo, 'liều neo' (anchor dose) = liều có given_at MUỘN NHẤT nhưng <= Tobs.
+    Các điểm đo có cùng liều neo được coi là CÙNG khoảng đưa liều -> gom vào 1 block, chạy
+    OFV chung 1 lần (đúng yêu cầu #4). Trả về (blocks, orphans):
+      - blocks: list các dict {"anchor_dose": VancoDose, "measurements": [...]},
+                đã sắp xếp theo thời gian liều neo tăng dần (occasion 1 -> N).
+      - orphans: các điểm đo có Tobs xảy ra TRƯỚC liều đầu tiên (không xác định được liều
+                 neo) -> không đủ dữ liệu để tính, bị loại khỏi blocks."""
+    doses_sorted = sorted(doses, key=lambda d: d.given_at)
+    grouped = {}
+    orphans = []
+    for m in measurements:
+        anchor = None
+        for d in doses_sorted:
+            if d.given_at <= m.t_obs:
+                anchor = d
+            else:
+                break
+        if anchor is None:
+            orphans.append(m)
+            continue
+        grouped.setdefault(anchor.given_at, {"anchor_dose": anchor, "measurements": []})
+        grouped[anchor.given_at]["measurements"].append(m)
+    blocks = [grouped[k] for k in sorted(grouped.keys())]
+    for b in blocks:
+        b["measurements"].sort(key=lambda m: m.t_obs)
+    return blocks, orphans
+
+
+def solve_bayesian_sequential(doses: List[VancoDose], blocks: list, initial_priors: VancoPriors,
+                               recompute_cl_fn, nearest_scr_fn, sd: float = 0.34, cv: float = 0.227):
+    """Chạy tối ưu Bayes TUẦN TỰ qua từng block (mỗi block = 1 khoảng đưa liều, có thể
+    gồm nhiều điểm đo cùng lúc):
+      - Block 1: dùng nguyên initial_priors (CL/Vc/Vp/Q từ mô hình quần thể).
+      - Block k>=2: Vc_prior=Vc_post(k-1), Vp_prior=Vp_post(k-1), Q_prior=Q(k-1) (không đổi
+        vì Q luôn cố định trong suốt quá trình tối ưu); CL_prior = recompute_cl_fn(SCr gần
+        Tobs đầu tiên của block k) — cập nhật lại theo chức năng thận mới nhất.
+    Trả về list VancoBayesResult (1 phần tử/block, theo thứ tự thời gian) — phần tử CUỐI
+    là kết quả tối ưu cần hiển thị/lưu (đúng yêu cầu #4)."""
+    results = []
+    priors = initial_priors
+    for i, block in enumerate(blocks):
+        if i > 0:
+            scr_i = nearest_scr_fn(block["measurements"][0].t_obs)
+            cl_prior_i = recompute_cl_fn(scr_i) if scr_i is not None else priors.cl_prior
+            priors = VancoPriors(cl_prior=cl_prior_i, vc_prior=priors.vc_prior, vp_prior=priors.vp_prior,
+                                  q_prior=priors.q_prior, omega_cl=initial_priors.omega_cl,
+                                  omega_vc=initial_priors.omega_vc, omega_vp=initial_priors.omega_vp)
+        res = solve_bayesian_posterior(priors, doses, block["measurements"], sd=sd, cv=cv)
+        res.anchor_dose = block["anchor_dose"]
+        results.append(res)
+        if res.success:
+            priors = VancoPriors(cl_prior=res.CL_optimized, vc_prior=res.Vc_optimized, vp_prior=res.Vp_optimized,
+                                  q_prior=priors.q_prior, omega_cl=initial_priors.omega_cl,
+                                  omega_vc=initial_priors.omega_vc, omega_vp=initial_priors.omega_vp)
+        else:
+            break  # Block lỗi -> dừng chuỗi, không cố tính tiếp các block sau
+    return results

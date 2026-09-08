@@ -5505,13 +5505,16 @@ def get_latest_vanco_tdm(msyt):
 #    alter table vanco_patient_current
 #        add column if not exists method text default 'Goti 2018',
 #        add column if not exists is_malignancy int default 0,
-#        add column if not exists is_heelprick int default 0;
+#        add column if not exists is_heelprick int default 0,
+#        add column if not exists scr_json jsonb default '[]',
+#        add column if not exists measurements_json jsonb default '[]';
 #
 #    alter table vanco_results_history
 #        add column if not exists method text default 'Goti 2018';
 # ==========================================
 def save_vanco_patient_current(msyt, age, gender, height, weight, scr, is_dialysis, doses_json,
-                                method="Goti 2018", is_malignancy=0, is_heelprick=0):
+                                method="Goti 2018", is_malignancy=0, is_heelprick=0,
+                                scr_json=None, measurements_json=None):
 
     """Luu (upsert theo msyt) thong tin benh nhan + lich su lieu dung MOI NHAT.
 
@@ -5531,6 +5534,7 @@ def save_vanco_patient_current(msyt, age, gender, height, weight, scr, is_dialys
 
             "scr": scr, "is_dialysis": is_dialysis, "doses_json": doses_json,
             "method": method, "is_malignancy": is_malignancy, "is_heelprick": is_heelprick,
+            "scr_json": scr_json or [], "measurements_json": measurements_json or [],
 
         }
 
