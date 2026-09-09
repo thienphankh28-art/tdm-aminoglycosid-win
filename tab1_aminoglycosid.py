@@ -162,17 +162,21 @@ class AmgDoseRow(ctk.CTkFrame):
 
 
 class AmgScrRow(ctk.CTkFrame):
-    """Một dòng nhập SCr: Giá trị SCr + Thời điểm đo + nút xóa (hỗ trợ nhiều lần đo SCr)."""
+    """Một dòng nhập SCr: Giá trị SCr + ĐƠN VỊ (μmol/L hoặc mg/dL, người dùng tự chọn) +
+    Thời điểm đo + nút xóa (hỗ trợ nhiều lần đo SCr)."""
 
-    def __init__(self, master, on_remove, scr_default=80.0, dt_default=None, **kwargs):
+    def __init__(self, master, on_remove, scr_default=80.0, unit_default="μmol/L", dt_default=None, **kwargs):
         super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
         dt_default = dt_default or datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
         self.scr_var = ctk.StringVar(value=str(scr_default))
+        self.unit_var = ctk.StringVar(value=unit_default)
         self.dt_var = ctk.StringVar(value=dt_default.strftime("%Y-%m-%d %H:%M"))
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=8, pady=6)
-        ctk.CTkLabel(row, text="SCr (mg/dL or umol/L):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(row, textvariable=self.scr_var, width=70).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(row, text="SCr:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(row, textvariable=self.scr_var, width=60).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(row, values=["μmol/L", "mg/dL"], variable=self.unit_var, width=90
+                           ).pack(side="left", padx=(0, 8))
         ctk.CTkLabel(row, text="Thời điểm đo:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
         ctk.CTkEntry(row, textvariable=self.dt_var, width=130).pack(side="left", padx=(0, 4))
         ctk.CTkButton(row, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 6))
@@ -184,7 +188,16 @@ class AmgScrRow(ctk.CTkFrame):
                                  callback=lambda dt: self.dt_var.set(dt.strftime("%Y-%m-%d %H:%M")))
 
     def get_scr(self):
-        return parse_float(self.scr_var.get(), 0.0), parse_amg_dt(self.dt_var.get())
+        """Trả về (SCr ĐÃ QUY ĐỔI mg/dL theo đơn vị người dùng chọn, thời điểm đo) — dùng
+        trực tiếp cho tính toán, KHÔNG còn tự đoán đơn vị theo ngưỡng >10 nữa."""
+        raw = parse_float(self.scr_var.get(), 0.0)
+        scr_mgdl = raw / 88.4 if self.unit_var.get() == "μmol/L" else raw
+        return scr_mgdl, parse_amg_dt(self.dt_var.get())
+
+    def get_raw(self):
+        """Trả về (giá trị SCr GỐC người dùng nhập, đơn vị đã chọn, thời điểm đo) — dùng khi
+        lưu/tải lại để hiển thị đúng như người dùng đã nhập, không hiển thị số đã quy đổi."""
+        return parse_float(self.scr_var.get(), 0.0), self.unit_var.get(), parse_amg_dt(self.dt_var.get())
 
 
 class AmgMeasRow(ctk.CTkFrame):
@@ -2626,6 +2639,8 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         # --- B. Nhiều lần đo SCr ---
         ctk.CTkLabel(p, text="B. Các lần đo SCr", font=FONT_SMALL, text_color=("gray30", "gray80")
                      ).pack(anchor="w", padx=6, pady=(4, 4))
+        ctk.CTkLabel(p, text="Chọn đúng đơn vị SCr cho từng dòng — phần mềm quy đổi tự động sang mg/dL để tính toán.",
+                     font=FONT_SMALL, text_color=("gray45", "gray65")).pack(anchor="w", padx=6, pady=(0, 4))
         self.amg_scr_container = ctk.CTkFrame(p, fg_color="transparent")
         self.amg_scr_container.pack(fill="x", padx=6)
         ctk.CTkButton(p, text="➕ Thêm lần đo SCr", height=30, width=150,
@@ -2735,9 +2750,9 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         self.amg_save_status.pack(fill="x", padx=6, pady=(0, 20))
 
     # --- Quản lý dòng SCr ---
-    def _add_amg_scr_row(self, scr_default=80.0, dt_default=None):
+    def _add_amg_scr_row(self, scr_default=80.0, unit_default="μmol/L", dt_default=None):
         row = AmgScrRow(self.amg_scr_container, on_remove=self._remove_amg_scr_row,
-                         scr_default=scr_default, dt_default=dt_default)
+                         scr_default=scr_default, unit_default=unit_default, dt_default=dt_default)
         row.pack(fill="x", pady=3)
         self.amg_scr_rows.append(row)
 
@@ -2973,8 +2988,8 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         date_str = m.t_obs.strftime("%Y-%m-%d")
         doses_payload = [{"dose_mg": d.dose_mg, "given_at": d.given_at.strftime("%Y-%m-%d %H:%M")}
                           for d in self.amg_doses_used]
-        scr_payload = [{"scr": v, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
-                       for v, dt in self._get_amg_scr_entries()]
+        scr_payload = [{"scr": v, "unit": u, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
+                       for v, u, dt in (r.get_raw() for r in self.amg_scr_rows)]
         meas_payload = [{"c_obs": mm.c_obs, "t_obs": mm.t_obs.strftime("%Y-%m-%d %H:%M"), "t_inf_h": mm.t_inf_h}
                         for mm in self._get_amg_measurements()]
 
@@ -3051,10 +3066,14 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                 scr_raw = []
         if scr_raw:
             for it in scr_raw:
+                # Dữ liệu cũ (lưu trước khi có ô chọn đơn vị) không có khóa "unit" -> mặc định
+                # μmol/L để tương thích ngược (giữ đúng hành vi tự quy đổi trước đây).
                 self._add_amg_scr_row(scr_default=parse_float(it.get("scr"), 80.0),
+                                       unit_default=it.get("unit") or "μmol/L",
                                        dt_default=parse_amg_dt(it.get("measured_at")))
         elif record.get("scr") is not None:
-            self._add_amg_scr_row(scr_default=record.get("scr"))
+            # Cột "scr" đại diện (dữ liệu cũ) luôn được lưu ở dạng ĐÃ quy đổi mg/dL
+            self._add_amg_scr_row(scr_default=record.get("scr"), unit_default="mg/dL")
         else:
             self._add_amg_scr_row()
 

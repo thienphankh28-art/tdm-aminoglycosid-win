@@ -111,9 +111,18 @@ def compute_vd_prior_amg(ibw: float) -> float:
 
 def compute_population_priors_amg(patient: AmgPatientInfo) -> Tuple[AmgPriors, dict]:
     """Tinh CLprior/Vprior day du tu thong tin benh nhan (dung SCr dai dien -- thuong la lan
-    do gan/moi nhat do UI cung cap)."""
+    do gan/moi nhat do UI cung cap).
+
+    LUU Y VE DON VI: patient.scr_value PHAI DA o dang mg/dL (KHONG con tu doan don vi theo
+    nguong >10 nua). Tu khi giao dien co o chon don vi tuong minh (mg/dL / umol/L) cho tung
+    dong SCr, viec quy doi duoc UI thuc hien 1 LAN DUY NHAT truoc khi goi ham nay -- neu goi
+    lai compute_scr_mgdl_amg() o day se GAY LOI CHIA 88.4 LAN 2 doi voi benh nhan suy than
+    nang/loc mau co SCr thuc te > 10 mg/dL (khong hiem trong quan the dung aminoglycosid),
+    lam SCr bi tinh sai thanh qua thap -> CLprior bi uoc luong sai qua cao. Neu can auto-doan
+    don vi tu 1 gia tri tho chua ro don vi, hay tu goi compute_scr_mgdl_amg() truoc khi tao
+    AmgPatientInfo, KHONG dua vao ham nay tu lam viec do."""
     ibw = compute_ibw_amg(patient.gender, patient.height_cm)
-    scr_mgdl = compute_scr_mgdl_amg(patient.scr_value)
+    scr_mgdl = patient.scr_value
     crcl = compute_crcl_amg(patient.age, patient.gender, patient.weight_kg, scr_mgdl)
     cl_prior = compute_cl_prior_amg(crcl)
     vd_prior = compute_vd_prior_amg(ibw)
@@ -125,8 +134,11 @@ def compute_population_priors_amg(patient: AmgPatientInfo) -> Tuple[AmgPriors, d
 def recompute_cl_prior_amg(patient: AmgPatientInfo, scr_value: float) -> float:
     """Tinh lai CLprior voi 1 gia tri SCr KHAC (cua lan do gan Tobs cua 1 khoang dua lieu cu
     the) -- tuoi/gioi/can nang giu nguyen theo thong tin benh nhan. Dung cho cap nhat tuan tu
-    qua nhieu lan TDM (yeu cau #4)."""
-    scr_mgdl = compute_scr_mgdl_amg(scr_value)
+    qua nhieu lan TDM (yeu cau #4).
+
+    LUU Y VE DON VI: scr_value PHAI DA o dang mg/dL -- xem giai thich chi tiet trong docstring
+    cua compute_population_priors_amg() o tren (khong tu doan don vi theo nguong >10 nua)."""
+    scr_mgdl = scr_value
     crcl = compute_crcl_amg(patient.age, patient.gender, patient.weight_kg, scr_mgdl)
     return compute_cl_prior_amg(crcl)
 
