@@ -35,9 +35,9 @@ GITHUB_VERSION_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-am
 GITHUB_CODE_BASE_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-aminoglycosid-win/main/"
 
 FILES_TO_UPDATE = [
-    "app.py", "ui_common.py", "login_frame.py", "login_frame.py", "ui_common.py"
+    "app.py", "ui_common.py", "login_frame.py", "login_frame.py", "ui_common.py",
     "tab1_aminoglycosid.py", "tab2_patient_db.py", "tab3_info.py", "tab4_vancomycin.py",
-    "database.py", "pk_calculations.py", "amg_bayesian_calculations.py", "vanco_calculations.py", "version.json", "
+    "database.py", "pk_calculations.py", "amg_bayesian_calculations.py", "vanco_calculations.py", "version.json",
 ]
 
 # ---------------------------------------------------------
