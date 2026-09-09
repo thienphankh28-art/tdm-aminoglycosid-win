@@ -5686,3 +5686,97 @@ def get_latest_vanco_result(msyt):
 
         return None
 
+
+
+# ==========================================
+# 8. TDM AMINOGLYCOSID - PHUONG PHAP BAYESIAN (Arechiga-Alvarado 2020)
+#    Bang MOI, hoan toan tach biet khoi bang "tdm_history" (Sawchuk-Zaske cu, khong doi):
+#
+#    create table amg_bayesian_patient_current (
+#        msyt text primary key, age numeric, gender text, height numeric, weight numeric,
+#        scr numeric, doses_json jsonb default '[]', scr_json jsonb default '[]',
+#        measurements_json jsonb default '[]', updated_at timestamptz default now()
+#    );
+#    create table amg_bayesian_results_history (
+#        id bigserial primary key, msyt text, tdm_date text, model text default 'Arechiga-Alvarado 2020',
+#        cl_prior numeric, vd_prior numeric, cl_optimized numeric, vd_optimized numeric, ke numeric,
+#        cpeak_current numeric, ctrough_current numeric, dose_used numeric, tau_used numeric,
+#        ofv_final numeric, created_at timestamptz default now()
+#    );
+# ==========================================
+
+def save_amg_bayesian_patient_current(msyt, age, gender, height, weight, scr, doses_json,
+                                       scr_json=None, measurements_json=None):
+    """Luu (upsert theo msyt) thong tin benh nhan + lieu dung + SCr + diem do MOI NHAT
+    cho phuong phap Bayesian AMG (tach biet hoan toan voi tdm_history cua Sawchuk-Zaske)."""
+    if not supabase:
+        return False, "Chua ket noi duoc Cloud Database!"
+    try:
+        data = {
+            "msyt": msyt, "age": age, "gender": gender, "height": height, "weight": weight,
+            "scr": scr, "doses_json": doses_json, "scr_json": scr_json or [],
+            "measurements_json": measurements_json or [],
+        }
+        supabase.table("amg_bayesian_patient_current").upsert(data, on_conflict="msyt").execute()
+        return True, "Da luu thong tin benh nhan + lieu dung Bayesian (ban moi nhat) len Cloud."
+    except Exception as e:
+        logger.error(f"Loi luu amg_bayesian_patient_current cho {msyt}: {e}")
+        return False, f"Loi luu thong tin benh nhan len Cloud: {e}"
+
+
+def get_amg_bayesian_patient_current(msyt):
+    """Lay thong tin benh nhan + lieu dung + SCr + diem do MOI NHAT theo MSYT. Tra ve dict hoac None."""
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("amg_bayesian_patient_current").select("*").eq("msyt", msyt).execute()
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"Loi tai amg_bayesian_patient_current cho {msyt}: {e}")
+        return None
+
+
+def save_amg_bayesian_result_history(msyt, tdm_date, cl_prior, vd_prior, cl_optimized, vd_optimized,
+                                      ke, cpeak_current, ctrough_current, dose_used, tau_used,
+                                      ofv_final, model="Aréchiga-Alvarado 2020"):
+    """LUON THEM MOI (khong ghi de) 1 ban ghi ket qua cho MOI lan chay Bayesian AMG."""
+    if not supabase:
+        return False, "Chua ket noi duoc Cloud Database!"
+    try:
+        data = {
+            "msyt": msyt, "tdm_date": tdm_date, "model": model,
+            "cl_prior": cl_prior, "vd_prior": vd_prior,
+            "cl_optimized": cl_optimized, "vd_optimized": vd_optimized, "ke": ke,
+            "cpeak_current": cpeak_current, "ctrough_current": ctrough_current,
+            "dose_used": dose_used, "tau_used": tau_used, "ofv_final": ofv_final,
+        }
+        supabase.table("amg_bayesian_results_history").insert(data).execute()
+        return True, f"Da luu ket qua TDM Bayesian AMG (lan chay ngay {tdm_date}) vao lich su."
+    except Exception as e:
+        logger.error(f"Loi luu amg_bayesian_results_history cho {msyt}: {e}")
+        return False, f"Loi luu lich su ket qua len Cloud: {e}"
+
+
+def get_amg_bayesian_results_history(msyt):
+    """Lay TOAN BO lich su ket qua TDM Bayesian AMG theo MSYT, moi nhat truoc. Tra ve list[dict]."""
+    if not supabase:
+        return []
+    try:
+        res = (supabase.table("amg_bayesian_results_history").select("*").eq("msyt", msyt)
+               .order("created_at", desc=True).execute())
+        return res.data or []
+    except Exception as e:
+        logger.error(f"Loi tai amg_bayesian_results_history cho {msyt}: {e}")
+        return []
+
+
+def delete_amg_bayesian_result_block(msyt, tdm_date):
+    """Xoa 1 dong ket qua TDM Bayesian AMG theo ngay (giong delete_tdm_block/delete_vanco_result_block)."""
+    if not supabase:
+        return False, "Chua ket noi duoc Cloud!"
+    try:
+        supabase.table("amg_bayesian_results_history").delete().eq("msyt", msyt).eq("tdm_date", tdm_date).execute()
+        return True, f"Da xoa ket qua TDM Bayesian AMG ngay {tdm_date}!"
+    except Exception as e:
+        logger.error(f"Loi xoa amg_bayesian_results_history {msyt}/{tdm_date}: {e}")
+        return False, f"Loi khi xoa dong du lieu: {e}"
