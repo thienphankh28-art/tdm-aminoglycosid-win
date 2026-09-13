@@ -414,6 +414,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self._add_scr_row(scr_default=80.0, dt_default=now)
         self._add_meas_row(cobs_default=15.0, tinf_default=1.0, dt_default=now + datetime.timedelta(hours=13))
 
+        # Hiển thị ngay thông tin dân số áp dụng của phương pháp mặc định (Goti 2018)
+        self.on_method_change()
+
 
 
     def _section_header(self, text):
@@ -450,13 +453,21 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         # --- Chọn phương pháp tính Bayes: Goti 2018 (mặc định) hoặc Collin 2019 ---
         method_row = ctk.CTkFrame(self, fg_color="transparent")
-        method_row.pack(fill="x", padx=6, pady=(0, 10))
+        method_row.pack(fill="x", padx=6, pady=(0, 6))
         ctk.CTkLabel(method_row, text="⚙️ Phương pháp tính Bayes:", font=FONT_SMALL).pack(side="left", padx=(0, 8))
         self.method_var = ctk.StringVar(value="Goti 2018")
         self.method_menu = ctk.CTkOptionMenu(
             method_row, values=["Goti 2018", "Collin 2019"], variable=self.method_var,
             width=200, command=self.on_method_change)
         self.method_menu.pack(side="left")
+
+        # --- Thông tin dân số áp dụng của mô hình đang chọn — cập nhật trong on_method_change() ---
+        self.method_population_box = ctk.CTkFrame(self, fg_color=("gray92", "gray17"), corner_radius=8)
+        self.method_population_box.pack(fill="x", padx=6, pady=(0, 10))
+        self.method_population_label = ctk.CTkLabel(
+            self.method_population_box, text="", font=FONT_SMALL, justify="left",
+            text_color=("gray25", "gray80"), wraplength=900)
+        self.method_population_label.pack(anchor="w", padx=12, pady=10)
 
         self._section_header("1. Thông tin bệnh nhân")
 
@@ -691,10 +702,27 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             is_heelprick=self.v_heelprick_check.get(),
         )
 
+    # Thông tin dân số áp dụng / thận trọng của từng mô hình — hiển thị ngay cạnh ô chọn mô hình.
+    POPULATION_INFO = {
+        "Goti 2018": (
+            "👥 Dân số áp dụng: người lớn (>16 tuổi) nằm viện/ICU — có hệ số hiệu chỉnh riêng "
+            "cho bệnh nhân lọc máu ngắt quãng (HD).\n"
+            "⚠️ Thận trọng (cả 2 mô hình): bệnh nhân lọc máu liên tục (CRRT), ECMO, hoặc biến động "
+            "sinh lý quá nhanh (sốc nhiễm khuẩn, đa chấn thương) — nên ưu tiên đo TDM 2 mẫu máu."
+        ),
+        "Collin 2019": (
+            "👥 Dân số áp dụng: mọi lứa tuổi (từ trẻ sơ sinh đến người rất cao tuổi), kể cả thể "
+            "trạng cực đoan (béo phì, teo cơ/SCr rất thấp) hoặc ung thư máu.\n"
+            "⚠️ Thận trọng (cả 2 mô hình): bệnh nhân lọc máu liên tục (CRRT), ECMO, hoặc biến động "
+            "sinh lý quá nhanh (sốc nhiễm khuẩn, đa chấn thương) — nên ưu tiên đo TDM 2 mẫu máu."
+        ),
+    }
+
     def on_method_change(self, choice=None):
         """Chuyển đổi hiển thị giữa 2 phương pháp: Goti 2018 (mặc định, giữ nguyên như cũ)
         và Collin 2019 (hiện thêm 2 trường hiệp biến, ẩn trường lọc máu vốn không dùng đến)."""
         method = self.method_var.get()
+        self.method_population_label.configure(text=self.POPULATION_INFO.get(method, ""))
         if method == "Collin 2019":
             self.v_dialysis_check.pack_forget()
             self.v_malignancy_check.pack(fill="x", pady=(10, 4))
