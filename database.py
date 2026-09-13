@@ -5510,7 +5510,9 @@ def get_latest_vanco_tdm(msyt):
 #        add column if not exists measurements_json jsonb default '[]';
 #
 #    alter table vanco_results_history
-#        add column if not exists method text default 'Goti 2018';
+#        add column if not exists method text default 'Goti 2018',
+#        add column if not exists dose_used numeric,
+#        add column if not exists tau_used numeric;
 # ==========================================
 def save_vanco_patient_current(msyt, age, gender, height, weight, scr, is_dialysis, doses_json,
                                 method="Goti 2018", is_malignancy=0, is_heelprick=0,
@@ -5581,10 +5583,9 @@ def get_vanco_patient_current(msyt):
 
 
 def save_vanco_result_history(msyt, tdm_date, q_prior, cl_prior, vc_prior, vp_prior,
-
                                c_obs, t_obs, t_inf, cl_optimized, vc_optimized, vp_optimized,
-
-                               c_pred_final, ofv_final, auc_current, method="Goti 2018"):
+                               c_pred_final, ofv_final, auc_current, method="Goti 2018",
+                               dose_used=None, tau_used=None):
 
     """LUON THEM MOI (khong upsert/ghi de) 1 ban ghi ket qua cho MOI lan chay Bayes.
 
@@ -5611,7 +5612,7 @@ def save_vanco_result_history(msyt, tdm_date, q_prior, cl_prior, vc_prior, vp_pr
             "c_pred_final": c_pred_final, "ofv_final": ofv_final,
 
             "auc_current": auc_current, "method": method,
-
+            "dose_used": dose_used, "tau_used": tau_used,
         }
 
         supabase.table("vanco_results_history").insert(data).execute()

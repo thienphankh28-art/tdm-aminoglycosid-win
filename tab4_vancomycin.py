@@ -1647,6 +1647,15 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         # Đảm bảo AUC hiện tại đã được tính theo dữ liệu mới nhất trước khi lưu
         auc_current = self.calc_auc_current()
 
+        # Liều/τ "đang dùng" của lần TDM này = liều neo (kề trước các điểm đo của block cuối) —
+        # dùng đúng logic đã có ở calc_auc_current() để lưu kèm vào lịch sử, phục vụ Tab 2.
+        anchor_dose = getattr(r, "anchor_dose", None)
+        anchor_row = self._find_dose_row_for(anchor_dose)
+        if anchor_row is None and self.dose_rows:
+            anchor_row = max(self.dose_rows, key=lambda row: row.get_dose().given_at)
+        dose_used = anchor_row.get_dose().dose_mg if anchor_row else None
+        tau_used = anchor_row.get_tau() if anchor_row else None
+
         # --- 1) Thông tin bệnh nhân + chế độ liều dùng: CHỈ LƯU/GHI ĐÈ BẢN MỚI NHẤT ---
         ok1, msg1 = db.save_vanco_patient_current(
             msyt=msyt_input,
@@ -1669,6 +1678,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             c_pred_final=r.C_pred_final, ofv_final=r.OFV_final,
             auc_current=auc_current,
             method=method,
+            dose_used=dose_used, tau_used=tau_used,
         )
 
 

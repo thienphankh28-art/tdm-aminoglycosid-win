@@ -8,11 +8,14 @@ LƯU Ý VỀ PHẠM VI: chỉ file này được viết lại. Không đụng đ
 Tab 1, Tab 4 hay các hàm trong database.py — tab2 chỉ ĐỌC (và xóa theo bản ghi có sẵn) dữ liệu
 đã có trên Cloud.
 
-Giới hạn đã biết (không thể khắc phục nếu không sửa database.py/tab khác — ngoài phạm vi lần
-này): bảng vanco_results_history hiện KHÔNG lưu "liều/τ đang dùng" riêng (chỉ có AUC), nên cột
-"Liều TDM (mg)"/"Tau (h)" của các dòng Vancomycin sẽ hiển thị "—". Nút "Xóa toàn bộ bệnh nhân"
-hiện chỉ xóa bảng patients/tdm_history (hành vi cũ, giữ nguyên) — muốn xóa gọn cả Vancomycin/
-Aminoglycosid-Bayesian của bệnh nhân đó, dùng tick chọn từng dòng trong bảng lịch sử bên dưới.
+Giới hạn còn lại: nút "Xóa toàn bộ bệnh nhân" hiện chỉ xóa bảng patients/tdm_history (hành vi
+cũ, giữ nguyên) — muốn xóa gọn cả Vancomycin/Aminoglycosid-Bayesian của bệnh nhân đó, dùng tick
+chọn từng dòng trong bảng lịch sử bên dưới.
+
+Cột "Liều TDM (mg)"/"Tau (h)" của dòng Vancomycin đọc từ 2 cột dose_used/tau_used mới trên
+bảng vanco_results_history — chỉ CÓ GIÁ TRỊ với các lần TDM lưu SAU KHI database.py và
+tab4_vancomycin.py được cập nhật (xem migration SQL trong database.py); các bản ghi cũ hơn
+vẫn hiển thị "—" vì dữ liệu đó chưa từng được lưu.
 """
 
 from tkinter import ttk, messagebox, filedialog
@@ -160,7 +163,7 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
                     df_vanco_history[col] = ""
 
             cols_to_extract = ["tdm_date", "method", "Tuổi", "Giới tính", "Chiều cao", "Cân nặng", "SCr", "Lọc máu",
-                               "q_prior", "cl_prior", "vc_prior", "vp_prior",
+                               "dose_used", "tau_used", "q_prior", "cl_prior", "vc_prior", "vp_prior",
                                "cl_optimized", "vc_optimized", "vp_optimized", "auc_current"]
 
             cols_present = [col for col in cols_to_extract if col in df_vanco_history.columns]
@@ -168,6 +171,7 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
 
             rename_dict = {
                 "tdm_date": "Ngày TDM", "method": "Phương pháp",
+                "dose_used": "Liều đang dùng", "tau_used": "τ đang dùng",
                 "q_prior": "Q_prior", "cl_prior": "Cl_prior", "vc_prior": "Vc_prior", "vp_prior": "Vp_prior",
                 "cl_optimized": "Cl_optimized", "vc_optimized": "Vc_optimized", "vp_optimized": "Vp_optimized",
                 "auc_current": "AUC_current"
@@ -268,7 +272,7 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
                     "source": "vanco", "msyt": msyt, "tdm_date": tdm_date,
                     "Thuốc": "Vancomycin", "Phương pháp": "Bayesian", "Mô hình": r.get("method") or "—",
                     "Ngày TDM": tdm_date,
-                    "Liều TDM (mg)": "—", "Tau (h)": "—",
+                    "Liều TDM (mg)": _fmt(r.get("dose_used"), 0), "Tau (h)": _fmt(r.get("tau_used"), 0),
                     "CL": _fmt(r.get("cl_optimized"), 3), "Vc": _fmt(r.get("vc_optimized"), 2),
                     "Vp": _fmt(r.get("vp_optimized"), 2), "AUC": _fmt(r.get("auc_current"), 2),
                     "Vd": "—", "Ke": "—",
