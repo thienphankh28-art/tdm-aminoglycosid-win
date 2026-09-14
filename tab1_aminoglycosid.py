@@ -2437,11 +2437,11 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
 
 
 
-                    cp_pred_val = row.get("cp_pred") or row.get("cp_predicted") or 0
+                    cp_pred_val = row.get("cp_pred") or row.get("pred_cp") or 0
 
 
 
-                    ctr_pred_val = row.get("ctr_pred") or row.get("ctr_predicted") or 0
+                    ctr_pred_val = row.get("ctr_pred") or row.get("pred_ctrough") or 0
 
 
 
