@@ -2249,31 +2249,24 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
 
 
 
+            # SỬA LỖI (2026-09): cột thực trên bảng "patients" là "weight"/"height" (không
+            # phải "weight_kg"/"height_cm") — dùng sai tên cột khiến patient_info.get(...) luôn
+            # trả None, âm thầm rơi về giá trị đang gõ dở trên form thay vì dữ liệu đã lưu của
+            # đúng bệnh nhân theo MSYT. Đồng thời KHÔNG dùng self._bmi/_ibw/_dosing_weight (được
+            # tính từ ô nhập hiện tại trên Mục 1, có thể khác bệnh nhân đang xuất báo cáo) mà
+            # tính lại BMI/IBW/Cân nặng tính liều ngay từ p_weight/p_height vừa lấy đúng từ Cloud,
+            # để báo cáo luôn nhất quán với đúng MSYT được xuất, bất kể form đang hiển thị gì.
             p_age = patient_info.get("age") or self.age_entry.get_float()
-
-
-
             p_gender = patient_info.get("gender") or self.gender_opt.get()
-
-
-
-            p_weight = patient_info.get("weight_kg") or self.weight_entry.get_float()
-
-
-
-            p_height = patient_info.get("height_cm") or self.height_entry.get_float()
-
-
-
-            p_bmi = patient_info.get("bmi") or self._bmi
-
-
-
-            p_ibw = patient_info.get("ibw") or self._ibw
-
-
-
-            p_dosing_weight = patient_info.get("dosing_weight") or self._dosing_weight
+            p_weight = patient_info.get("weight") or self.weight_entry.get_float()
+            p_height = patient_info.get("height") or self.height_entry.get_float()
+            _report_patient = PatientInfo(
+                gender=p_gender, height_cm=p_height, weight_kg=p_weight,
+                scr_umol=self.current_scr_entry.get_float(80.0), age=p_age,
+                is_cf=bool(patient_info.get("is_cf", 0)))
+            p_ibw = compute_ibw(_report_patient)
+            p_bmi = compute_bmi(_report_patient)
+            p_dosing_weight = compute_dosing_weight(_report_patient, p_ibw)
 
 
 
@@ -2437,11 +2430,11 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
 
 
 
-                    cp_pred_val = row.get("cp_pred") or row.get("pred_cp") or 0
-
-
-
-                    ctr_pred_val = row.get("ctr_pred") or row.get("pred_ctrough") or 0
+                    # SỬA LỖI (2026-09): cột thực do save_sec4_data() lưu là "pred_cp"/"pred_ctrough"
+                    # (không phải "cp_pred"/"ctr_pred") — khiến báo cáo PDF luôn hiện 0.00 dù
+                    # đã tính và lưu đúng giá trị dự đoán ở Mục 4.
+                    cp_pred_val = row.get("pred_cp") or row.get("cp_pred") or row.get("cp_predicted") or 0
+                    ctr_pred_val = row.get("pred_ctrough") or row.get("ctr_pred") or row.get("ctr_predicted") or 0
 
 
 
