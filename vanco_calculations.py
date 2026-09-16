@@ -642,13 +642,10 @@ def compute_population_priors(patient: VancoPatientInfo, q_prior: float = 6.5,
 
 
     weight_cg = compute_crcl_weight_vanco(patient.weight_kg, ibw, adjbw, bmi)
-
-
-
-    scr_mgdl = compute_scr_mgdl(patient.scr_value)
-
-
-
+    # LUU Y DON VI: patient.scr_value phai DA o dang mg/dL (UI luon quy doi truoc theo don
+    # vi nguoi dung chon tuong minh) -- KHONG con goi lai compute_scr_mgdl() (tu doan >10) o
+    # day nua, tranh chia 88.4 lan 2 doi voi benh nhan SCr thuc te > 10 mg/dL (suy than nang).
+    scr_mgdl = patient.scr_value
     scr_corr = compute_scr_corrected(scr_mgdl, patient.age)
 
 
@@ -1497,7 +1494,9 @@ def compute_population_priors_collin(patient: VancoPatientInfoCollin) -> Tuple[V
     vc_prior=V1, vp_prior=V2, q_prior=Q2, omega_cl/vc/vp) nen tuong thich hoan
     toan voi compute_cpred_two_compartment / compute_ofv / solve_bayesian_posterior
     hien co -- khong can sua bat ky ham toi uu hoa Bayes nao."""
-    scr_mgdl = compute_scr_mgdl(patient.scr_value)  # tai su dung ham quy doi don vi cua Goti
+    # LUU Y DON VI: patient.scr_value phai DA o dang mg/dL (xem ghi chu chi tiet trong
+    # compute_population_priors() o tren) -- khong con tu doan don vi theo nguong >10 nua.
+    scr_mgdl = patient.scr_value
 
     pma_weeks = compute_pma_weeks_collin(patient.age)
     f_size = compute_f_size_collin(patient.weight_kg)
@@ -1549,7 +1548,7 @@ def recompute_cl_prior_goti(patient: VancoPatientInfo, scr_value: float) -> floa
     bmi = compute_bmi_vanco(patient.weight_kg, patient.height_cm)
     adjbw = compute_adjbw_vanco(patient.weight_kg, ibw)
     weight_cg = compute_crcl_weight_vanco(patient.weight_kg, ibw, adjbw, bmi)
-    scr_mgdl = compute_scr_mgdl(scr_value)
+    scr_mgdl = scr_value  # da o dang mg/dL, xem ghi chu don vi trong compute_population_priors()
     scr_corr = compute_scr_corrected(scr_mgdl, patient.age)
     crcl = compute_crcl_vanco(patient.age, patient.gender, weight_cg, scr_corr)
     crcl_capped = compute_crcl_capped(crcl)
@@ -1562,7 +1561,7 @@ def recompute_cl_prior_collin(patient: VancoPatientInfoCollin, scr_value: float)
     f_mat = compute_f_mat_collin(pma_weeks)
     f_decline = compute_f_decline_collin(patient.weight_kg)
     v1_prior = compute_v1_prior_collin(patient.weight_kg, patient.is_heelprick)
-    scr_mgdl = compute_scr_mgdl(scr_value)
+    scr_mgdl = scr_value  # da o dang mg/dL, xem ghi chu don vi trong compute_population_priors()
     f_scr = compute_f_scr_collin(scr_mgdl, patient.age)
     return compute_cl_prior_collin(v1_prior, f_mat, f_decline, f_scr, patient.is_malignancy)
 

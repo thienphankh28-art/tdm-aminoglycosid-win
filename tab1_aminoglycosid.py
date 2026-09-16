@@ -2122,29 +2122,21 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
 
 
     def _build_section6_pdf(self):
-
-
-
         ctk.CTkLabel(self.sz_container, text="📄 Xuất báo cáo hội chẩn TDM (PDF) theo CSDL bệnh nhân",
-
-
-
                      font=FONT_H2).pack(anchor="w", padx=6, pady=(4, 6))
 
-
+        ctk.CTkButton(self.sz_container, text="👁️ Xem trước nội dung TDM sẽ xuất ra PDF", height=34,
+                      fg_color="#6e7781", hover_color="#57606a",
+                      command=self.preview_pdf_data).pack(fill="x", padx=6, pady=(0, 6))
+        ctk.CTkLabel(self.sz_container, text="Chỉ phần các đợt TDM — không gồm thông tin hành chính bệnh nhân.",
+                     font=FONT_SMALL, text_color=("gray45", "gray65")).pack(anchor="w", padx=6, pady=(0, 4))
+        self.pdf_preview_box = ctk.CTkTextbox(self.sz_container, height=180, font=("Consolas", 11),
+                                               state="disabled", wrap="word")
+        self.pdf_preview_box.pack(fill="x", padx=6, pady=(0, 12))
 
         ctk.CTkButton(self.sz_container, text="📥 Tạo và Lưu file báo cáo PDF từ CSDL", height=36,
-
-
-
                       command=self.export_pdf).pack(fill="x", padx=6, pady=(0, 4))
-
-
-
         self.pdf_status = StatusLabel(self.sz_container)
-
-
-
         self.pdf_status.pack(fill="x", padx=6, pady=(0, 20))
 
 
@@ -2152,6 +2144,67 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
 
 
 
+
+    def _get_tdm_records_summary(self, records):
+        """Trả về list các dict tóm tắt từng đợt TDM (Ke, t1/2, Vd, Peak/Trough thực, liều mới
+        đề xuất, Cp_pred/Ctr_pred) — KHÔNG gồm thông tin hành chính bệnh nhân. Dùng CHUNG cho cả
+        khung xem trước (Mục 6) và nội dung PDF thật, đảm bảo xem trước khớp 100% với PDF xuất ra."""
+        summary = []
+        for idx, row in enumerate(records, 1):
+            ke_val = row.get("ke") or row.get("Ke") or 0
+            thalf_val = row.get("thalf") or row.get("t_half") or (0.693 / ke_val if ke_val > 0 else 0)
+            vd_val = row.get("vd") or row.get("Vd") or 0
+            peak_val = row.get("true_peak") or row.get("peak") or 0
+            trough_val = row.get("true_trough") or row.get("trough") or 0
+            dose_val = row.get("new_dose") or row.get("dose") or 0
+            tau_val = row.get("new_tau") or row.get("tau") or 24
+            t_inf_val = row.get("new_t_inf") or row.get("t_inf") or 1
+            cp_pred_val = row.get("pred_cp") or row.get("cp_pred") or row.get("cp_predicted") or 0
+            ctr_pred_val = row.get("pred_ctrough") or row.get("ctr_pred") or row.get("ctr_predicted") or 0
+            summary.append({
+                "idx": idx, "tdm_date": row.get("tdm_date", "Chưa cập nhật"),
+                "ke": ke_val, "thalf": thalf_val, "vd": vd_val,
+                "peak": peak_val, "trough": trough_val,
+                "dose": dose_val, "tau": tau_val, "t_inf": t_inf_val,
+                "cp_pred": cp_pred_val, "ctr_pred": ctr_pred_val,
+            })
+        return summary
+
+    def preview_pdf_data(self):
+        """Xem trước nội dung PHẦN TDM sẽ xuất ra PDF (không gồm thông tin hành chính bệnh
+        nhân) — để người dùng kiểm tra lại trước khi thực sự tạo file."""
+        msyt_input = self.msyt_entry.get().strip()
+        self.pdf_preview_box.configure(state="normal")
+        self.pdf_preview_box.delete("1.0", "end")
+        if not msyt_input:
+            self.pdf_preview_box.insert("1.0", "⚠️ Vui lòng nhập MSYT để xem trước.")
+            self.pdf_preview_box.configure(state="disabled")
+            self.pdf_status.show("⚠️ Vui lòng nhập MSYT để xem trước.", "warning")
+            return
+        try:
+            history_res = (db.supabase.table("tdm_history").select("*")
+                           .eq("msyt", msyt_input).order("tdm_date", desc=True).execute())
+            records = history_res.data if history_res.data else []
+            summary = self._get_tdm_records_summary(records)
+            if not summary:
+                text = "Chưa có lịch sử TDM nào trong CSDL cho MSYT này."
+            else:
+                lines = [f"Các đợt TDM sẽ đưa vào báo cáo PDF (MSYT: {msyt_input}) — {len(summary)} đợt:\n"]
+                for s in summary:
+                    lines.append(f"--- Đợt {s['idx']} | Ngày TDM: {s['tdm_date']} ---")
+                    lines.append(f"  • Dược động học (PK): Ke = {s['ke']:.4f} h⁻¹, t½ = {s['thalf']:.2f} giờ, Vd = {s['vd']:.2f} lít")
+                    lines.append(f"  • Nồng độ thực tế: Peak = {s['peak']:.2f} μg/mL, Trough = {s['trough']:.3f} μg/mL")
+                    lines.append(f"  • Khuyến nghị liều mới: {s['dose']} mg (τ = {s['tau']}h, t' = {s['t_inf']}h)")
+                    lines.append(f"  • Dự đoán tại Css: Cp_pred = {s['cp_pred']:.2f} μg/mL, Ctr_pred = {s['ctr_pred']:.3f} μg/mL")
+                    lines.append("")
+                text = "\n".join(lines)
+            self.pdf_preview_box.insert("1.0", text)
+            self.pdf_status.show(f"✅ Đã tải xem trước — {len(summary)} đợt TDM.", "success")
+        except Exception as e:
+            self.pdf_preview_box.insert("1.0", f"❌ Lỗi khi tải xem trước: {e}")
+            self.pdf_status.show(f"❌ Lỗi khi tải xem trước: {e}", "error")
+        finally:
+            self.pdf_preview_box.configure(state="disabled")
 
     def export_pdf(self):
 
@@ -2394,122 +2447,26 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
 
 
 
-                for idx, row in enumerate(records, 1):
-
-
-
-                    ke_val = row.get("ke") or row.get("Ke") or 0
-
-
-
-                    thalf_val = row.get("thalf") or row.get("t_half") or (0.693 / ke_val if ke_val > 0 else 0)
-
-
-
-                    vd_val = row.get("vd") or row.get("Vd") or 0
-
-
-
-                    peak_val = row.get("true_peak") or row.get("peak") or 0
-
-
-
-                    trough_val = row.get("true_trough") or row.get("trough") or 0
-
-
-
-                    dose_val = row.get("new_dose") or row.get("dose") or 0
-
-
-
-                    tau_val = row.get("new_tau") or row.get("tau") or 24
-
-
-
-                    t_inf_val = row.get("new_t_inf") or row.get("t_inf") or 1
-
-
-
-                    # SỬA LỖI (2026-09): cột thực do save_sec4_data() lưu là "pred_cp"/"pred_ctrough"
-                    # (không phải "cp_pred"/"ctr_pred") — khiến báo cáo PDF luôn hiện 0.00 dù
-                    # đã tính và lưu đúng giá trị dự đoán ở Mục 4.
-                    cp_pred_val = row.get("pred_cp") or row.get("cp_pred") or row.get("cp_predicted") or 0
-                    ctr_pred_val = row.get("pred_ctrough") or row.get("ctr_pred") or row.get("ctr_predicted") or 0
-
-
-
-
-
-
-
+                # Dùng CHUNG hàm tóm tắt với khung xem trước (Mục 6) để đảm bảo nội dung
+                # xem trước khớp 100% với PDF thật xuất ra.
+                for s in self._get_tdm_records_summary(records):
                     pdf.set_font("Arial", "B", 10)
-
-
-
                     pdf.cell(0, 6, clean_vn_text(
-
-
-
-                        f"--- Dot {idx} | Ngay TDM: {row.get('tdm_date', 'Chua cap nhat')} ---"), ln=True)
-
-
-
-
-
-
+                        f"--- Dot {s['idx']} | Ngay TDM: {s['tdm_date']} ---"), ln=True)
 
                     pdf.set_font("Arial", "", 10)
-
-
-
                     pdf.cell(0, 5, clean_vn_text(
-
-
-
-                        f"  + Duoc dong hoc (PK): Ke = {ke_val:.4f} h-1, t1/2 = {thalf_val:.2f} gio, "
-
-
-
-                        f"Vd = {vd_val:.2f} lit"), ln=True)
-
-
-
+                        f"  + Duoc dong hoc (PK): Ke = {s['ke']:.4f} h-1, t1/2 = {s['thalf']:.2f} gio, "
+                        f"Vd = {s['vd']:.2f} lit"), ln=True)
                     pdf.cell(0, 5, clean_vn_text(
-
-
-
-                        f"  + Nong do thuc te: Peak = {peak_val:.2f} ug/mL, Trough = {trough_val:.3f} ug/mL"),
-
-
-
+                        f"  + Nong do thuc te: Peak = {s['peak']:.2f} ug/mL, Trough = {s['trough']:.3f} ug/mL"),
                         ln=True)
-
-
-
                     pdf.cell(0, 5, clean_vn_text(
-
-
-
-                        f"  + Khuyen nghi lieu moi: {dose_val} mg (tau = {tau_val}h, t' = {t_inf_val}h)"),
-
-
-
+                        f"  + Khuyen nghi lieu moi: {s['dose']} mg (tau = {s['tau']}h, t' = {s['t_inf']}h)"),
                         ln=True)
-
-
-
                     pdf.cell(0, 5, clean_vn_text(
-
-
-
-                        f"  + Du doan tai CSS: Cp_pred = {cp_pred_val:.2f} ug/mL, "
-
-
-
-                        f"Ctr_pred = {ctr_pred_val:.3f} ug/mL"), ln=True)
-
-
-
+                        f"  + Du doan tai CSS: Cp_pred = {s['cp_pred']:.2f} ug/mL, "
+                        f"Ctr_pred = {s['ctr_pred']:.3f} ug/mL"), ln=True)
                     pdf.ln(3)
 
 

@@ -50,7 +50,7 @@ from vanco_calculations import (
 
     compute_ibw_vanco, compute_bmi_vanco, compute_adjbw_vanco,
 
-    compute_crcl_weight_vanco, compute_scr_mgdl, compute_scr_corrected,
+    compute_crcl_weight_vanco, compute_scr_corrected,
 
     compute_crcl_vanco, compute_crcl_capped,
     group_measurements_by_dose_block, solve_bayesian_sequential, find_nearest_scr,
@@ -299,17 +299,22 @@ class VancoDoseRow(ctk.CTkFrame):
 
 
 class VancoScrRow(ctk.CTkFrame):
-    """Một dòng nhập SCr: Giá trị SCr + Thời điểm đo + nút xóa (hỗ trợ nhiều lần đo SCr)."""
+    """Một dòng nhập SCr: Giá trị SCr + ĐƠN VỊ (μmol/L hoặc mg/dL, người dùng tự chọn) +
+    Thời điểm đo + nút xóa (hỗ trợ nhiều lần đo SCr). Không còn tự đoán đơn vị theo
+    ngưỡng >10 — người dùng chọn tường minh, giống Mục B của Tab 1 (Bayesian AMG)."""
 
-    def __init__(self, master, on_remove, scr_default=80.0, dt_default=None, **kwargs):
+    def __init__(self, master, on_remove, scr_default=80.0, unit_default="μmol/L", dt_default=None, **kwargs):
         super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
         dt_default = dt_default or datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
         self.scr_var = ctk.StringVar(value=str(scr_default))
+        self.unit_var = ctk.StringVar(value=unit_default)
         self.dt_var = ctk.StringVar(value=dt_default.strftime("%Y-%m-%d %H:%M"))
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=8, pady=6)
         ctk.CTkLabel(row, text="SCr:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(row, textvariable=self.scr_var, width=70).pack(side="left", padx=(0, 8))
+        ctk.CTkEntry(row, textvariable=self.scr_var, width=60).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(row, values=["μmol/L", "mg/dL"], variable=self.unit_var, width=90
+                           ).pack(side="left", padx=(0, 8))
         ctk.CTkLabel(row, text="Thời điểm đo:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
         ctk.CTkEntry(row, textvariable=self.dt_var, width=130).pack(side="left", padx=(0, 4))
         ctk.CTkButton(row, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 6))
@@ -321,7 +326,16 @@ class VancoScrRow(ctk.CTkFrame):
         DateTimePickerWindow(self, initial_dt=current_dt, callback=lambda dt: self.dt_var.set(dt.strftime("%Y-%m-%d %H:%M")))
 
     def get_scr(self):
-        return parse_float(self.scr_var.get(), 0.0), parse_vanco_datetime(self.dt_var.get())
+        """Trả về (SCr ĐÃ QUY ĐỔI mg/dL theo đơn vị người dùng chọn, thời điểm đo) — dùng
+        trực tiếp cho tính toán, KHÔNG còn tự đoán đơn vị theo ngưỡng >10 nữa."""
+        raw = parse_float(self.scr_var.get(), 0.0)
+        scr_mgdl = raw / 88.4 if self.unit_var.get() == "μmol/L" else raw
+        return scr_mgdl, parse_vanco_datetime(self.dt_var.get())
+
+    def get_raw(self):
+        """Trả về (giá trị SCr GỐC người dùng nhập, đơn vị đã chọn, thời điểm đo) — dùng khi
+        lưu/tải lại để hiển thị đúng như người dùng đã nhập, không hiển thị số đã quy đổi."""
+        return parse_float(self.scr_var.get(), 0.0), self.unit_var.get(), parse_vanco_datetime(self.dt_var.get())
 
 
 class VancoMeasRow(ctk.CTkFrame):
@@ -598,6 +612,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(self, text="1b. Các lần đo SCr (Creatinin huyết thanh)", font=FONT_SMALL,
                      text_color=("gray30", "gray80")).pack(anchor="w", padx=6, pady=(14, 4))
+        ctk.CTkLabel(self, text="Chọn đúng đơn vị SCr cho từng dòng — phần mềm quy đổi tự động sang mg/dL để tính toán.",
+                     font=FONT_SMALL, text_color=("gray45", "gray65")).pack(anchor="w", padx=6, pady=(0, 4))
         self.scr_container = ctk.CTkFrame(self, fg_color="transparent")
         self.scr_container.pack(fill="x", padx=6)
         ctk.CTkButton(self, text="➕ Thêm lần đo SCr", height=30, width=150,
@@ -808,10 +824,14 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             self._remove_scr_row(row)
         if scr_raw:
             for item in scr_raw:
+                # Dữ liệu cũ (lưu trước khi có ô chọn đơn vị) không có khóa "unit" -> mặc định
+                # μmol/L để tương thích ngược (giữ đúng hành vi tự quy đổi trước đây).
                 self._add_scr_row(scr_default=parse_float(item.get("scr"), 80.0),
+                                   unit_default=item.get("unit") or "μmol/L",
                                    dt_default=parse_vanco_datetime(item.get("measured_at")))
         elif record.get("scr") is not None:
-            self._add_scr_row(scr_default=record.get("scr"))
+            # Cột "scr" đại diện (dữ liệu cũ) luôn được lưu ở dạng ĐÃ quy đổi mg/dL
+            self._add_scr_row(scr_default=record.get("scr"), unit_default="mg/dL")
         else:
             self._add_scr_row()
 
@@ -947,7 +967,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             bmi = compute_bmi_vanco(patient.weight_kg, patient.height_cm)
             adjbw = compute_adjbw_vanco(patient.weight_kg, ibw)
             weight_cg = compute_crcl_weight_vanco(patient.weight_kg, ibw, adjbw, bmi)
-            scr_mgdl = compute_scr_mgdl(patient.scr_value)
+            scr_mgdl = patient.scr_value  # đã ở dạng mg/dL (xem ghi chú đơn vị ở VancoScrRow)
             scr_corr = compute_scr_corrected(scr_mgdl, patient.age)
             crcl = compute_crcl_vanco(patient.age, patient.gender, weight_cg, scr_corr)
             crcl_capped = compute_crcl_capped(crcl)
@@ -1092,9 +1112,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         return doses
 
     # --- Mục 1b: Các lần đo SCr (nhiều dòng) ---
-    def _add_scr_row(self, scr_default=80.0, dt_default=None):
+    def _add_scr_row(self, scr_default=80.0, unit_default="μmol/L", dt_default=None):
         row = VancoScrRow(self.scr_container, on_remove=self._remove_scr_row,
-                           scr_default=scr_default, dt_default=dt_default)
+                           scr_default=scr_default, unit_default=unit_default, dt_default=dt_default)
         row.pack(fill="x", pady=3)
         self.scr_rows.append(row)
 
@@ -1667,8 +1687,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         date_str = m.t_obs.strftime("%Y-%m-%d")
         doses_payload = [{"dose_mg": d.dose_mg, "given_at": d.given_at.strftime("%Y-%m-%d %H:%M")}
                           for d in self.doses_used]
-        scr_payload = [{"scr": v, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
-                       for v, dt in self._get_scr_entries()]
+        scr_payload = [{"scr": v, "unit": u, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
+                       for v, u, dt in (r.get_raw() for r in self.scr_rows)]
         meas_payload = [{"c_obs": mm.c_obs, "t_obs": mm.t_obs.strftime("%Y-%m-%d %H:%M"), "t_inf_h": mm.t_inf_h}
                         for mm in self._get_measurements()]
 
