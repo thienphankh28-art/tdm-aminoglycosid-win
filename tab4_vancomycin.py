@@ -55,6 +55,7 @@ from vanco_calculations import (
     compute_crcl_vanco, compute_crcl_capped,
     group_measurements_by_dose_block, solve_bayesian_sequential, find_nearest_scr,
     recompute_cl_prior_goti, recompute_cl_prior_collin,
+    compute_cpred_two_compartment,
 
 )
 
@@ -1420,18 +1421,102 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
         row_res = ctk.CTkFrame(self, fg_color="transparent")
-
         row_res.pack(fill="x", padx=6, pady=(4, 0))
-
         self.card_auc_result = MetricCard(row_res, "AUC kết quả (mg·h/L)")
-
         self.card_auc_result.pack(fill="x", padx=4, pady=4)
 
+        # --- 6b. Dự đoán Cpred tại 1 thời điểm cụ thể với liều/τ mới ---
+        ctk.CTkLabel(
+            self, text="Dự đoán Cpred (liều/τ mới) — chồng chất liều: các liều ở Mục 3 + các liều "
+                       "của chế độ MỚI được dùng từ sau liều cuối (Mục 3) đến thời điểm dự đoán.",
+            font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left"
+        ).pack(anchor="w", padx=6, pady=(16, 6))
 
+        row_tinf = ctk.CTkFrame(self, fg_color="transparent")
+        row_tinf.pack(fill="x", padx=6)
+        self.v_new_tinf_entry = LabeledEntry(row_tinf, "Tinf mới (h)", default=1.0)
+        self.v_new_tinf_entry.pack(fill="x")
+
+        target_frame = ctk.CTkFrame(self, fg_color="transparent")
+        target_frame.pack(fill="x", padx=6, pady=(10, 0))
+        ctk.CTkLabel(target_frame, text="Thời điểm dự đoán (để trống = mặc định: 30 phút trước liều thứ 5 của chế độ mới)",
+                     font=FONT_SMALL).pack(anchor="w")
+        target_sub = ctk.CTkFrame(target_frame, fg_color="transparent")
+        target_sub.pack(fill="x", pady=(2, 4))
+        self.v_cpred_target_entry = ctk.CTkEntry(target_sub, placeholder_text="Để trống = mặc định")
+        self.v_cpred_target_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(target_sub, text="📅", width=36, command=self.open_cpred_target_calendar).pack(side="left")
+
+        ctk.CTkButton(self, text="🧮 TÍNH Cpred DỰ ĐOÁN", height=36, fg_color="#8250df", hover_color="#6639ba",
+                      command=self.calc_cpred_prediction).pack(fill="x", padx=6, pady=(10, 6))
+
+        row_cpred_res = ctk.CTkFrame(self, fg_color="transparent")
+        row_cpred_res.pack(fill="x", padx=6, pady=(4, 0))
+        self.card_cpred_predict = MetricCard(row_cpred_res, "Cpred dự đoán (μg/mL)")
+        self.card_cpred_predict.pack(fill="x", padx=4, pady=4)
+        self.cpred_predict_time_label = ctk.CTkLabel(
+            self, text="", font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left")
+        self.cpred_predict_time_label.pack(anchor="w", padx=6, pady=(4, 0))
 
         ttk.Separator(self, orient="horizontal").pack(fill="x", padx=6, pady=14)
 
+    def open_cpred_target_calendar(self):
+        current_dt = parse_vanco_datetime(self.v_cpred_target_entry.get()) if self.v_cpred_target_entry.get().strip() else datetime.datetime.now()
+        DateTimePickerWindow(self, initial_dt=current_dt, callback=lambda dt: (
+            self.v_cpred_target_entry.delete(0, "end"), self.v_cpred_target_entry.insert(0, dt.strftime("%Y-%m-%d %H:%M"))))
 
+    def calc_cpred_prediction(self):
+        """Dự đoán Cpred tại 1 thời điểm cụ thể (mặc định: 30 phút trước liều thứ 5 của chế
+        độ liều MỚI), theo nguyên lý chồng chất liều: các liều đã có ở Mục 3 CỘNG với các
+        liều của chế độ mới được dùng từ ngay sau liều cuối (Mục 3) cho tới thời điểm dự đoán."""
+        if self.bayes_result is None or not self.bayes_result.success:
+            self.card_cpred_predict.set_value("Chưa chạy solve Bayes")
+            self.cpred_predict_time_label.configure(text="")
+            return
+        if not self.dose_rows:
+            self.card_cpred_predict.set_value("Chưa có liều ở Mục 3")
+            return
+
+        new_dose = self.v_new_dose_entry.get_float(1000.0)
+        new_tau = self.v_new_tau_entry.get_float(12.0)
+        new_tinf = self.v_new_tinf_entry.get_float(1.0)
+        if new_dose <= 0 or new_tau <= 0 or new_tinf <= 0:
+            self.card_cpred_predict.set_value("Giá trị không hợp lệ")
+            self.cpred_predict_time_label.configure(text="")
+            return
+
+        last_dose_row = max(self.dose_rows, key=lambda r: r.get_dose().given_at)
+        last_dose_time = last_dose_row.get_dose().given_at
+
+        target_str = self.v_cpred_target_entry.get().strip()
+        if target_str:
+            target_time = parse_vanco_datetime(target_str)
+            is_default = False
+        else:
+            # Mặc định: 30 phút trước liều thứ 5 của chế độ mới. Liều 1 của chế độ mới =
+            # liều cuối (Mục 3) + τ_mới; liều thứ 5 = liều cuối + 5×τ_mới.
+            target_time = last_dose_time + datetime.timedelta(hours=5 * new_tau) - datetime.timedelta(minutes=30)
+            is_default = True
+
+        # Sinh các liều của chế độ MỚI, bắt đầu ngay sau liều cuối (Mục 3), cách nhau τ_mới,
+        # chỉ tính các liều đã thực sự "được dùng" (given_at <= thời điểm dự đoán).
+        new_regimen_doses = []
+        t = last_dose_time + datetime.timedelta(hours=new_tau)
+        while t <= target_time and len(new_regimen_doses) < 500:
+            new_regimen_doses.append(VancoDose(dose_mg=new_dose, given_at=t))
+            t += datetime.timedelta(hours=new_tau)
+
+        full_doses = self._get_doses() + new_regimen_doses
+        q = self.priors.q_prior if self.priors is not None else 6.5
+        cpred = compute_cpred_two_compartment(
+            self.bayes_result.CL_optimized, self.bayes_result.Vc_optimized,
+            self.bayes_result.Vp_optimized, q, full_doses, target_time, new_tinf)
+
+        self.card_cpred_predict.set_value(f"{cpred:.2f} μg/mL")
+        note = " (mặc định: 30 phút trước liều thứ 5 của chế độ mới)" if is_default else " (do người dùng nhập)"
+        self.cpred_predict_time_label.configure(text=(
+            f"⏱ Thời điểm tính: {target_time.strftime('%Y-%m-%d %H:%M')}{note} — đã cộng dồn "
+            f"{len(self._get_doses())} liều ở Mục 3 + {len(new_regimen_doses)} liều của chế độ mới."))
 
     def calc_auc(self):
 
