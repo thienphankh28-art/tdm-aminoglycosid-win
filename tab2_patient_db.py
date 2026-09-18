@@ -269,7 +269,7 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
             for _, r in df_vanco.iterrows():
                 tdm_date = str(r.get("tdm_date", ""))
                 rows.append({
-                    "source": "vanco", "msyt": msyt, "tdm_date": tdm_date,
+                    "source": "vanco", "msyt": msyt, "tdm_date": tdm_date, "method": r.get("method"),
                     "Thuốc": "Vancomycin", "Phương pháp": "Bayesian", "Mô hình": r.get("method") or "—",
                     "Ngày TDM": tdm_date,
                     "Liều TDM (mg)": _fmt(r.get("dose_used"), 0), "Tau (h)": _fmt(r.get("tau_used"), 0),
@@ -291,7 +291,8 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
         for r in rows:
             values = ["☐"] + [r.get(c, "—") for c in UNIFIED_COLS[1:]]
             iid = self.unified_tree.insert("", "end", values=values)
-            self._unified_row_meta[iid] = {"source": r["source"], "msyt": r["msyt"], "tdm_date": r["tdm_date"]}
+            self._unified_row_meta[iid] = {"source": r["source"], "msyt": r["msyt"], "tdm_date": r["tdm_date"],
+                                            "method": r.get("method")}
         return len(rows)
 
     def _on_unified_tree_click(self, event):
@@ -345,7 +346,7 @@ class Tab2DatabaseFrame(ctk.CTkFrame):
             elif m["source"] == "amg_bayes":
                 ok, msg = db.delete_amg_bayesian_result_block(m["msyt"], m["tdm_date"])
             else:
-                ok, msg = db.delete_vanco_result_block(m["msyt"], m["tdm_date"])
+                ok, msg = db.delete_vanco_result_block(m["msyt"], m["tdm_date"], m.get("method"))
             if ok:
                 ok_count += 1
             else:

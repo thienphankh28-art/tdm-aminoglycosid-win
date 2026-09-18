@@ -919,7 +919,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
                 vp = f"{r.get('vp_optimized', 0):.2f}" if pd.notnull(r.get('vp_optimized')) else "--"
                 auc = f"{r.get('auc_current', 0):.2f}" if pd.notnull(r.get('auc_current')) else "--"
                 iid = self.prev_tree.insert("", "end", values=("☐", d_date, d_method, cl, vc, vp, auc))
-                self._vanco_row_meta[iid] = {"msyt": msyt, "tdm_date": d_date}
+                # Lưu kèm "method" để xóa đúng 1 dòng khi 1 ngày có cả kết quả Goti lẫn Collin
+                # (trước đây chỉ lưu msyt+ngày nên tick xóa 1 dòng sẽ xóa nhầm cả 2).
+                self._vanco_row_meta[iid] = {"msyt": msyt, "tdm_date": d_date, "method": r.get("method")}
 
 
 
@@ -1711,7 +1713,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         ok_count, fail_msgs = 0, []
         for row in checked:
-            ok, msg = db.delete_vanco_result_block(row["msyt"], row["tdm_date"])
+            ok, msg = db.delete_vanco_result_block(row["msyt"], row["tdm_date"], row.get("method"))
             if ok:
                 ok_count += 1
             else:

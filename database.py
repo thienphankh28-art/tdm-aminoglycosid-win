@@ -3406,17 +3406,27 @@ def delete_tdm_block(msyt, tdm_date):
 
 
 
-def delete_vanco_result_block(msyt, tdm_date):
+def delete_vanco_result_block(msyt, tdm_date, method=None):
     """Xóa một dòng (lần) kết quả TDM Vancomycin theo ngày, trên bảng
     vanco_results_history — tương tự delete_tdm_block() nhưng cho Vancomycin.
+
+    SỬA LỖI (2026-09): trước đây chỉ lọc theo (msyt, tdm_date) — nếu 1 ngày có 2 kết quả
+    của 2 phương pháp khác nhau (vd Goti 2018 và Collin 2019 cùng chạy trong ngày), tick
+    xóa 1 dòng sẽ xóa NHẦM CẢ 2. Nay lọc thêm theo "method" khi được truyền vào, để chỉ
+    xóa đúng 1 dòng người dùng đã chọn. Nếu method=None (gọi từ nơi khác chưa cập nhật),
+    giữ hành vi cũ để không phá vỡ tương thích ngược.
     Trả về (success, message)."""
     if not supabase:
         return False, "Chưa kết nối Cloud!"
     try:
-        supabase.table("vanco_results_history").delete().eq("msyt", msyt).eq("tdm_date", tdm_date).execute()
-        return True, f"Đã xóa thành công kết quả TDM Vancomycin ngày {tdm_date}!"
+        query = supabase.table("vanco_results_history").delete().eq("msyt", msyt).eq("tdm_date", tdm_date)
+        if method is not None:
+            query = query.eq("method", method)
+        query.execute()
+        suffix = f" (phương pháp {method})" if method else ""
+        return True, f"Đã xóa thành công kết quả TDM Vancomycin ngày {tdm_date}{suffix}!"
     except Exception as e:
-        logger.error(f"Lỗi khi xóa kết quả TDM Vancomycin {msyt}/{tdm_date}: {e}")
+        logger.error(f"Lỗi khi xóa kết quả TDM Vancomycin {msyt}/{tdm_date}/{method}: {e}")
         return False, f"Lỗi khi xóa dòng dữ liệu: {e}"
 
 
