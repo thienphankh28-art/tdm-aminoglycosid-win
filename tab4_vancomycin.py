@@ -54,7 +54,7 @@ from vanco_calculations import (
 
     compute_crcl_vanco, compute_crcl_capped,
     group_measurements_by_dose_block, solve_bayesian_sequential, find_nearest_scr,
-    recompute_cl_prior_goti, recompute_cl_prior_collin,
+    recompute_full_priors_goti, recompute_full_priors_collin,
     compute_cpred_two_compartment,
 
 )
@@ -1339,14 +1339,17 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         if method == "Collin 2019":
             sd, cv = COLLIN_SD, COLLIN_CV
             patient = self._get_patient_collin()
-            recompute_cl_fn = lambda scr: recompute_cl_prior_collin(patient, scr)
+            recompute_priors_fn = lambda scr: recompute_full_priors_collin(patient, scr)
         else:
             sd, cv = 0.34, 0.227
             patient = self._get_patient()
-            recompute_cl_fn = lambda scr: recompute_cl_prior_goti(patient, scr)
+            recompute_priors_fn = lambda scr: recompute_full_priors_goti(patient, scr)
         nearest_scr_fn = lambda t_obs: find_nearest_scr(scr_entries, t_obs)
 
-        block_results = solve_bayesian_sequential(doses, blocks, self.priors, recompute_cl_fn,
+        # SỬA (2026-09): MỌI lần TDM (kể cả lần đầu) đều dùng tiền nghiệm CL/Vc/Vp/Q tính lại
+        # hoàn toàn mới từ mô hình quần thể (không còn kế thừa Vc/Vp hậu nghiệm của lần trước)
+        # — tránh dữ liệu bệnh nhân trôi dạt khỏi quần thể tham khảo qua nhiều lần TDM liên tiếp.
+        block_results = solve_bayesian_sequential(doses, blocks, recompute_priors_fn,
                                                     nearest_scr_fn, sd=sd, cv=cv)
         self.block_results = block_results
         result = block_results[-1] if block_results else None

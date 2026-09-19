@@ -1596,32 +1596,51 @@ def group_measurements_by_dose_block(measurements: List[VancoMeasurement], doses
     return blocks, orphans
 
 
-def solve_bayesian_sequential(doses: List[VancoDose], blocks: list, initial_priors: VancoPriors,
-                               recompute_cl_fn, nearest_scr_fn, sd: float = 0.34, cv: float = 0.227):
-    """Chạy tối ưu Bayes TUẦN TỰ qua từng block (mỗi block = 1 khoảng đưa liều, có thể
-    gồm nhiều điểm đo cùng lúc):
-      - Block 1: dùng nguyên initial_priors (CL/Vc/Vp/Q từ mô hình quần thể).
-      - Block k>=2: Vc_prior=Vc_post(k-1), Vp_prior=Vp_post(k-1), Q_prior=Q(k-1) (không đổi
-        vì Q luôn cố định trong suốt quá trình tối ưu); CL_prior = recompute_cl_fn(SCr gần
-        Tobs đầu tiên của block k) — cập nhật lại theo chức năng thận mới nhất.
+def recompute_full_priors_goti(patient: VancoPatientInfo, scr_value: float, q_prior: float = 6.5,
+                                omega_cl: float = 0.398, omega_vc: float = 0.816,
+                                omega_vp: float = 0.571) -> VancoPriors:
+    """Tính lại TOÀN BỘ tiền nghiệm (CL/Vc/Vp/Q) theo mô hình Goti 2018 từ 1 giá trị SCr cụ
+    thể (mg/dL, của lần đo gần Tobs của 1 khoảng đưa liều cụ thể) — dùng cho MỌI lần TDM
+    (kể cả lần đầu), KHÔNG kế thừa hậu nghiệm của lần TDM trước. Việc này tránh hiện tượng
+    Vc/Vp "trôi dạt" dần ra khỏi quần thể tham khảo qua nhiều lần TDM liên tiếp — vì lý do:
+    omega (ωVc, ωVp) đo độ biến thiên GIỮA CÁC BỆNH NHÂN so với quần thể, không phải độ tin
+    cậy của 1 ước lượng hậu nghiệm từ dữ liệu thưa (thường chỉ 1 mẫu đáy) của lần trước; nếu
+    kế thừa hậu nghiệm làm tiền nghiệm mới mà vẫn dùng omega quần thể gốc, sai lệch ngẫu
+    nhiên của 1 lần đo sẽ neo lại vĩnh viễn qua các lần sau."""
+    patient_i = VancoPatientInfo(age=patient.age, gender=patient.gender, height_cm=patient.height_cm,
+                                  weight_kg=patient.weight_kg, scr_value=scr_value, is_dialysis=patient.is_dialysis)
+    priors, _ = compute_population_priors(patient_i, q_prior=q_prior, omega_cl=omega_cl,
+                                           omega_vc=omega_vc, omega_vp=omega_vp)
+    return priors
+
+
+def recompute_full_priors_collin(patient: VancoPatientInfoCollin, scr_value: float) -> VancoPriors:
+    """Tương tự recompute_full_priors_goti() nhưng theo mô hình Collin 2019 — xem giải
+    thích chi tiết trong docstring của recompute_full_priors_goti()."""
+    patient_i = VancoPatientInfoCollin(age=patient.age, gender=patient.gender, height_cm=patient.height_cm,
+                                        weight_kg=patient.weight_kg, scr_value=scr_value,
+                                        is_malignancy=patient.is_malignancy, is_heelprick=patient.is_heelprick)
+    priors, _ = compute_population_priors_collin(patient_i)
+    return priors
+
+
+def solve_bayesian_sequential(doses: List[VancoDose], blocks: list, recompute_priors_fn,
+                               nearest_scr_fn, sd: float = 0.34, cv: float = 0.227):
+    """Chạy tối ưu Bayes qua từng block (mỗi block = 1 khoảng đưa liều, có thể gồm nhiều
+    điểm đo cùng lúc). SỬA (2026-09): MỌI block — kể cả block đầu tiên — đều dùng tiền
+    nghiệm CL/Vc/Vp/Q TÍNH LẠI HOÀN TOÀN MỚI từ mô hình quần thể (recompute_priors_fn),
+    dùng SCr gần Tobs của CHÍNH block đó — KHÔNG còn kế thừa Vc/Vp hậu nghiệm của block
+    trước (xem lý do trong docstring recompute_full_priors_goti()). Nhờ vậy tiền nghiệm
+    mỗi lần TDM luôn bám đúng công thức quần thể gốc, không trôi dạt qua nhiều lần TDM.
     Trả về list VancoBayesResult (1 phần tử/block, theo thứ tự thời gian) — phần tử CUỐI
     là kết quả tối ưu cần hiển thị/lưu (đúng yêu cầu #4)."""
     results = []
-    priors = initial_priors
-    for i, block in enumerate(blocks):
-        if i > 0:
-            scr_i = nearest_scr_fn(block["measurements"][0].t_obs)
-            cl_prior_i = recompute_cl_fn(scr_i) if scr_i is not None else priors.cl_prior
-            priors = VancoPriors(cl_prior=cl_prior_i, vc_prior=priors.vc_prior, vp_prior=priors.vp_prior,
-                                  q_prior=priors.q_prior, omega_cl=initial_priors.omega_cl,
-                                  omega_vc=initial_priors.omega_vc, omega_vp=initial_priors.omega_vp)
-        res = solve_bayesian_posterior(priors, doses, block["measurements"], sd=sd, cv=cv)
+    for block in blocks:
+        scr_i = nearest_scr_fn(block["measurements"][0].t_obs)
+        priors_i = recompute_priors_fn(scr_i)
+        res = solve_bayesian_posterior(priors_i, doses, block["measurements"], sd=sd, cv=cv)
         res.anchor_dose = block["anchor_dose"]
         results.append(res)
-        if res.success:
-            priors = VancoPriors(cl_prior=res.CL_optimized, vc_prior=res.Vc_optimized, vp_prior=res.Vp_optimized,
-                                  q_prior=priors.q_prior, omega_cl=initial_priors.omega_cl,
-                                  omega_vc=initial_priors.omega_vc, omega_vp=initial_priors.omega_vp)
-        else:
+        if not res.success:
             break  # Block lỗi -> dừng chuỗi, không cố tính tiếp các block sau
     return results
