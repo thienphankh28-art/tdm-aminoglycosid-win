@@ -260,28 +260,38 @@ def group_measurements_by_dose_block_amg(measurements: List[AmgMeasurement], dos
     return blocks, orphans
 
 
-def solve_bayesian_sequential_amg(doses: List[AmgDose], blocks: list, initial_priors: AmgPriors,
-                                   recompute_cl_fn, nearest_scr_fn, sigma: float = AA2020_SIGMA):
-    """Toi uu Bayes TUAN TU qua tung block (moi block = 1 khoang dua lieu):
-      - Block 1: dung nguyen initial_priors (CL/Vd tu mo hinh quan the AA2020).
-      - Block k>=2: Vd_prior = Vd_post(k-1); CL_prior = recompute_cl_fn(SCr gan Tobs dau
-        tien cua block k) -- cap nhat lai theo chuc nang than moi nhat.
+def recompute_full_priors_amg(patient: AmgPatientInfo, scr_value: float) -> AmgPriors:
+    """Tinh lai TOAN BO tien nghiem (CL/Vd) theo mo hinh Arechiga-Alvarado 2020 tu 1 gia tri
+    SCr cu the (mg/dL, cua lan do gan Tobs cua 1 khoang dua lieu cu the) -- dung cho MOI lan
+    TDM (ke ca lan dau), KHONG ke thua hau nghiem cua lan TDM truoc. Ly do (giong het
+    vanco_calculations.recompute_full_priors_goti()): omega_vd do do bien thien GIUA CAC
+    BENH NHAN so voi quan the, khong phai do tin cay cua 1 uoc luong hau nghiem tu du lieu
+    thua (thuong chi 1 mau) cua lan truoc -- neu ke thua hau nghiem lam tien nghiem moi ma
+    van dung omega quan the goc, sai lech ngau nhien cua 1 lan do se neo lai vinh vien qua
+    cac lan sau (hien tuong "troi dat" ra khoi quan the tham khao)."""
+    patient_i = AmgPatientInfo(age=patient.age, gender=patient.gender, height_cm=patient.height_cm,
+                                weight_kg=patient.weight_kg, scr_value=scr_value)
+    priors, _ = compute_population_priors_amg(patient_i)
+    return priors
+
+
+def solve_bayesian_sequential_amg(doses: List[AmgDose], blocks: list, recompute_priors_fn,
+                                   nearest_scr_fn, sigma: float = AA2020_SIGMA):
+    """Toi uu Bayes qua tung block (moi block = 1 khoang dua lieu). SUA (2026-09): MOI
+    block -- ke ca block dau tien -- deu dung tien nghiem CL/Vd TINH LAI HOAN TOAN MOI tu
+    mo hinh quan the (recompute_priors_fn), dung SCr gan Tobs cua CHINH block do -- KHONG
+    con ke thua Vd hau nghiem cua block truoc (xem ly do trong docstring
+    recompute_full_priors_amg()). Nho vay tien nghiem moi lan TDM luon bam dung cong thuc
+    quan the goc, khong troi dat qua nhieu lan TDM.
     Tra ve list AmgBayesResult -- phan tu CUOI la ket qua can hien thi/luu (yeu cau #4)."""
     results = []
-    priors = initial_priors
-    for i, block in enumerate(blocks):
-        if i > 0:
-            scr_i = nearest_scr_fn(block["measurements"][0].t_obs)
-            cl_prior_i = recompute_cl_fn(scr_i) if scr_i is not None else priors.cl_prior
-            priors = AmgPriors(cl_prior=cl_prior_i, vd_prior=priors.vd_prior,
-                                omega_cl=initial_priors.omega_cl, omega_vd=initial_priors.omega_vd)
-        res = solve_bayesian_posterior_amg(priors, doses, block["measurements"], sigma=sigma)
+    for block in blocks:
+        scr_i = nearest_scr_fn(block["measurements"][0].t_obs)
+        priors_i = recompute_priors_fn(scr_i)
+        res = solve_bayesian_posterior_amg(priors_i, doses, block["measurements"], sigma=sigma)
         res.anchor_dose = block["anchor_dose"]
         results.append(res)
-        if res.success:
-            priors = AmgPriors(cl_prior=res.CL_optimized, vd_prior=res.Vd_optimized,
-                                omega_cl=initial_priors.omega_cl, omega_vd=initial_priors.omega_vd)
-        else:
+        if not res.success:
             break
     return results
 

@@ -56,7 +56,7 @@ from ui_common import (
 from amg_bayesian_calculations import (
     AmgPatientInfo, AmgDose, AmgMeasurement,
     compute_population_priors_amg, group_measurements_by_dose_block_amg,
-    solve_bayesian_sequential_amg, find_nearest_scr_amg, recompute_cl_prior_amg,
+    solve_bayesian_sequential_amg, find_nearest_scr_amg, recompute_full_priors_amg,
     compute_css_peak_trough_amg, simulate_concentration_curve_amg,
 )
 
@@ -2817,9 +2817,12 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         patient = self._get_amg_patient()
         self.amg_priors, _ = compute_population_priors_amg(patient)
 
+        # SỬA (2026-09): MỌI lần TDM (kể cả lần đầu) đều dùng tiền nghiệm CL/Vd tính lại hoàn
+        # toàn mới từ mô hình quần thể (không còn kế thừa Vd hậu nghiệm của lần trước) —
+        # tránh dữ liệu bệnh nhân trôi dạt khỏi quần thể tham khảo qua nhiều lần TDM liên tiếp.
         block_results = solve_bayesian_sequential_amg(
-            doses, blocks, self.amg_priors,
-            lambda scr: recompute_cl_prior_amg(patient, scr),
+            doses, blocks,
+            lambda scr: recompute_full_priors_amg(patient, scr),
             lambda t: find_nearest_scr_amg(scr_entries, t))
         self.amg_block_results = block_results
         result = block_results[-1] if block_results else None
