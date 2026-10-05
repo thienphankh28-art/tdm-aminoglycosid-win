@@ -46,16 +46,16 @@ from vanco_calculations import (
 
     VancoPatientInfoCollin, compute_population_priors_collin,
 
-    COLLIN_SD, COLLIN_CV, COLLIN_RES_ERR_PROP,
+    COLLIN_SD, COLLIN_CV, COLLIN_RES_ERR_PROP, GOTI_RES_ERR_ADD, GOTI_RES_ERR_PROP,
 
     compute_ibw_vanco, compute_bmi_vanco, compute_adjbw_vanco,
 
     compute_crcl_weight_vanco, compute_scr_corrected,
 
     compute_crcl_vanco, compute_crcl_capped,
-    group_measurements_by_dose_block, solve_bayesian_sequential, find_nearest_scr,
+    group_measurements_by_dose_block, solve_bayesian_sequential, find_nearest_scr_entry,
     recompute_full_priors_goti, recompute_full_priors_collin,
-    compute_cpred_two_compartment,
+    compute_cpred_two_compartment_piecewise,
 
 )
 
@@ -646,7 +646,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         
 
-        info_text = "• Q = 6.5 L/h (Cố định)\n• ωCL = 0.398  |  ωVc = 0.816  |  ωVp = 0.571\n• SD sai số dư = 0.34  |  CV sai số dư = 0.227 (22.7%)"
+        info_text = "• Q = 6.5 L/h (Cố định)\n• ωCL = 0.398  |  ωVc = 0.816  |  ωVp = 0.571\n• SD sai số dư = 3.4  |  CV sai số dư = 0.227 (22.7%)"
         self.priors_info_label = ctk.CTkLabel(priors_info_frame, text=info_text, font=FONT_SMALL, justify="left", text_color=("gray25", "gray80"))
         self.priors_info_label.pack(anchor="w", padx=12, pady=10)
         # Lưu sẵn text gốc của Goti để khôi phục khi chuyển phương pháp qua lại
@@ -1341,16 +1341,16 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             patient = self._get_patient_collin()
             recompute_priors_fn = lambda scr: recompute_full_priors_collin(patient, scr)
         else:
-            sd, cv = 0.34, 0.227
+            sd, cv = GOTI_RES_ERR_ADD, GOTI_RES_ERR_PROP
             patient = self._get_patient()
             recompute_priors_fn = lambda scr: recompute_full_priors_goti(patient, scr)
-        nearest_scr_fn = lambda t_obs: find_nearest_scr(scr_entries, t_obs)
+        nearest_scr_entry_fn = lambda t_obs: find_nearest_scr_entry(scr_entries, t_obs)
 
         # SỬA (2026-09): MỌI lần TDM (kể cả lần đầu) đều dùng tiền nghiệm CL/Vc/Vp/Q tính lại
         # hoàn toàn mới từ mô hình quần thể (không còn kế thừa Vc/Vp hậu nghiệm của lần trước)
         # — tránh dữ liệu bệnh nhân trôi dạt khỏi quần thể tham khảo qua nhiều lần TDM liên tiếp.
         block_results = solve_bayesian_sequential(doses, blocks, recompute_priors_fn,
-                                                    nearest_scr_fn, sd=sd, cv=cv)
+                                                    nearest_scr_entry_fn, sd=sd, cv=cv)
         self.block_results = block_results
         result = block_results[-1] if block_results else None
         self.bayes_result = result
@@ -1513,9 +1513,27 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         full_doses = self._get_doses() + new_regimen_doses
         q = self.priors.q_prior if self.priors is not None else 6.5
-        cpred = compute_cpred_two_compartment(
-            self.bayes_result.CL_optimized, self.bayes_result.Vc_optimized,
-            self.bayes_result.Vp_optimized, q, full_doses, target_time, new_tinf)
+
+        # SỬA (2026-09, xử lý AKI): dùng CL BẬC THANG từ TOÀN BỘ các lần TDM đã giải (không
+        # chỉ CL của lần cuối) — mỗi đoạn quá khứ dùng đúng CL_post cố định của lần TDM đó,
+        # đoạn cuối cùng (CL_post mới nhất) áp dụng cho cả liều còn lại ở Mục 3 lẫn các liều
+        # của chế độ MỚI — nhất quán với cách tính OFV khi tối ưu Bayesian ở Mục E.
+        # CL_post của lần TDM k = CL của khoảng (TDM k-1 → TDM k]; lần 1: từ liều đầu tiên.
+        # Đoạn cuối (CL_post mới nhất) kéo dài tiếp qua các liều còn lại ở Mục 3 và cả các liều
+        # của chế độ MỚI. Ranh giới = thời điểm đo của lần TDM trước (xem solve_bayesian_sequential).
+        cl_segments = []
+        seg_start = min(d.given_at for d in self._get_doses())
+        for r in self.block_results:
+            if not r.points:
+                continue
+            cl_segments.append((seg_start, r.CL_optimized))
+            seg_start = max(p["t_obs"] for p in r.points)
+        if not cl_segments:
+            cl_segments = [(last_dose_time, self.bayes_result.CL_optimized)]
+
+        cpred = compute_cpred_two_compartment_piecewise(
+            cl_segments, self.bayes_result.Vc_optimized, self.bayes_result.Vp_optimized,
+            q, full_doses, target_time, new_tinf)
 
         self.card_cpred_predict.set_value(f"{cpred:.2f} μg/mL")
         note = " (mặc định: 30 phút trước liều thứ 5 của chế độ mới)" if is_default else " (do người dùng nhập)"

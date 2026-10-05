@@ -79,6 +79,7 @@ import numpy as np
 
 
 from scipy.optimize import minimize
+from scipy.linalg import expm
 
 
 
@@ -906,7 +907,13 @@ def compute_cpred_two_compartment(cl: float, vc: float, vp: float, q: float,
 
 
 
-def compute_sigma(c_pred: float, sd: float = 0.34, cv: float = 0.227) -> float:
+# Sai so du Goti 2018 -- Bang 2 bai goc: "Additive Error SD 3.4 mg/L", "Proportional error 22.7 %CV".
+# SUA LOI (2026-10): truoc day dung 0.34 (theo Excel, lech 10 lan so voi bai bao).
+GOTI_RES_ERR_ADD = 3.4
+GOTI_RES_ERR_PROP = 0.227
+
+
+def compute_sigma(c_pred: float, sd: float = GOTI_RES_ERR_ADD, cv: float = GOTI_RES_ERR_PROP) -> float:
 
 
 
@@ -914,7 +921,7 @@ def compute_sigma(c_pred: float, sd: float = 0.34, cv: float = 0.227) -> float:
 
 
 
-    Mặc định SD=0.34, CV=0.227 lấy đúng theo công thức B29 của Excel gốc."""
+    Mặc định SD=3.4 mg/L, CV=0.227 theo Bảng 2 bài Goti 2018 (trước đây 0.34 theo Excel — lệch 10 lần)."""
 
 
 
@@ -930,19 +937,37 @@ def compute_sigma(c_pred: float, sd: float = 0.34, cv: float = 0.227) -> float:
 
 
 
+def _cl_segments_for_solve(cl: float, doses: List[VancoDose],
+                            historical_cl_segments, current_segment_start) -> List[Tuple[datetime.datetime, float]]:
+    """Ghép các đoạn CL đã CỐ ĐỊNH từ những lần TDM trước (historical_cl_segments) với đoạn
+    HIỆN TẠI dùng "cl" (giá trị đang được tối ưu), bắt đầu từ current_segment_start. Nếu
+    không có lịch sử (historical_cl_segments rỗng/None), chỉ có 1 đoạn duy nhất — tương
+    đương hoàn toàn CL không đổi suốt lịch sử liều (hành vi gốc, đã kiểm định khớp tuyệt
+    đối với compute_cpred_two_compartment())."""
+    seg_start = current_segment_start if current_segment_start is not None else min(d.given_at for d in doses)
+    return list(historical_cl_segments or []) + [(seg_start, cl)]
+
+
 def compute_ofv(cl: float, vc: float, vp: float, priors: VancoPriors,
                  doses: List[VancoDose], measurements: List[VancoMeasurement],
-                 sd: float = 0.34, cv: float = 0.227) -> float:
+                 sd: float = GOTI_RES_ERR_ADD, cv: float = GOTI_RES_ERR_PROP,
+                 historical_cl_segments: Optional[List[Tuple[datetime.datetime, float]]] = None,
+                 current_segment_start: Optional[datetime.datetime] = None) -> float:
     """Hàm mục tiêu Bayes (OFV) — tổng phạt log-normal của 3 tham số + tổng phạt sai số dư
     của TỪNG điểm đo (hỗ trợ nhiều điểm đo Cobs/Tobs cùng lúc):
         OFV_tổng = OFV_CL + OFV_Vc + OFV_Vp + Σ_i (Cobs_i - Cpred_i)^2 / sigma_i^2
-    (measurements có thể chỉ gồm 1 điểm — khi đó tương đương công thức gốc)."""
+    (measurements có thể chỉ gồm 1 điểm — khi đó tương đương công thức gốc).
+
+    historical_cl_segments/current_segment_start: hỗ trợ CL BẬC THANG THEO THỜI GIAN (xử lý
+    AKI/suy thận cấp) — xem _cl_segments_for_solve(). Mặc định None => hành vi gốc, CL không
+    đổi suốt lịch sử liều (tương thích ngược 100%, đã kiểm định)."""
     ofv_cl = ((np.log(cl) - np.log(priors.cl_prior)) ** 2) / (priors.omega_cl ** 2)
     ofv_vc = ((np.log(vc) - np.log(priors.vc_prior)) ** 2) / (priors.omega_vc ** 2)
     ofv_vp = ((np.log(vp) - np.log(priors.vp_prior)) ** 2) / (priors.omega_vp ** 2)
+    cl_segments = _cl_segments_for_solve(cl, doses, historical_cl_segments, current_segment_start)
     ofv_points = 0.0
     for m in measurements:
-        c_pred = compute_cpred_two_compartment(cl, vc, vp, priors.q_prior, doses, m.t_obs, m.t_inf_h)
+        c_pred = compute_cpred_two_compartment_piecewise(cl_segments, vc, vp, priors.q_prior, doses, m.t_obs, m.t_inf_h)
         sigma = compute_sigma(c_pred, sd, cv)
         ofv_points += ((m.c_obs - c_pred) ** 2) / (sigma ** 2)
     return ofv_cl + ofv_vc + ofv_vp + ofv_points
@@ -972,11 +997,13 @@ def compute_ofv(cl: float, vc: float, vp: float, priors: VancoPriors,
 def solve_bayesian_posterior(priors: VancoPriors,
                               doses: List[VancoDose],
                               measurements,
-                              sd: float = 0.34,
-                              cv: float = 0.227,
+                              sd: float = GOTI_RES_ERR_ADD,
+                              cv: float = GOTI_RES_ERR_PROP,
                               cl_min: float = 0.1,
                               vc_min: float = 5.0,
-                              vp_min: float = 1.0) -> VancoBayesResult:
+                              vp_min: float = 1.0,
+                              historical_cl_segments: Optional[List[Tuple[datetime.datetime, float]]] = None,
+                              current_segment_start: Optional[datetime.datetime] = None) -> VancoBayesResult:
 
 
 
@@ -1041,7 +1068,8 @@ def solve_bayesian_posterior(priors: VancoPriors,
 
     def objective(x):
         cl, vc, vp = x
-        return compute_ofv(cl, vc, vp, priors, doses, measurements, sd, cv)
+        return compute_ofv(cl, vc, vp, priors, doses, measurements, sd, cv,
+                            historical_cl_segments, current_segment_start)
 
 
 
@@ -1114,10 +1142,11 @@ def solve_bayesian_posterior(priors: VancoPriors,
 
     # Cpred + OFV riêng cho TỪNG điểm đo (yêu cầu #3) — sắp theo thời gian đo tăng dần
     measurements_sorted = sorted(measurements, key=lambda m: m.t_obs)
+    cl_segments_final = _cl_segments_for_solve(cl_opt, doses, historical_cl_segments, current_segment_start)
     points = []
     for m in measurements_sorted:
-        c_pred_i = compute_cpred_two_compartment(cl_opt, vc_opt, vp_opt, priors.q_prior,
-                                                   doses, m.t_obs, m.t_inf_h)
+        c_pred_i = compute_cpred_two_compartment_piecewise(cl_segments_final, vc_opt, vp_opt, priors.q_prior,
+                                                             doses, m.t_obs, m.t_inf_h)
         sigma_i = compute_sigma(c_pred_i, sd, cv)
         ofv_i = ((m.c_obs - c_pred_i) ** 2) / (sigma_i ** 2)
         points.append({"t_obs": m.t_obs, "c_obs": m.c_obs, "c_pred": float(c_pred_i), "ofv": float(ofv_i)})
@@ -1403,9 +1432,17 @@ COLLIN_SD = COLLIN_RES_ERR_ADD              # 1.23
 COLLIN_CV = COLLIN_RES_ERR_PROP / 100.0     # 0.215
 
 
+COLLIN_WEEKS_PER_YEAR = 52.1429
+
+
 def compute_pma_weeks_collin(age: float) -> float:
-    """PMA (tuan) = Tuoi (nam) * 52.1429 -- tai hien dung o B43 cua Excel."""
-    return age * 52.1429
+    """PMA (tuan) = Tuoi (nam) * 52.1429 + 40 tuan.
+    SUA (2026-10) theo bai goc Collin 2019 (muc 2.1): "Postmenstrual age for patients other than
+    neonates was assumed to be 40 weeks longer than the recorded postnatal age". Excel goc chi
+    dung tuoi*52.1429 (thieu 40 tuan) -- khong anh huong dang ke voi nguoi lon (~0.8 nam)
+    nhung can thiet cho tre em. Luu y: giao dien chi nhap TUOI (khong co tuoi thai) nen sinh
+    non (preterm) chua duoc mo hinh hoa dung."""
+    return age * COLLIN_WEEKS_PER_YEAR + 40.0
 
 
 def compute_f_size_collin(weight_kg: float) -> float:
@@ -1421,22 +1458,24 @@ def compute_f_mat_collin(pma_weeks: float, pma50: float = COLLIN_PMA50,
     return (pma_weeks ** gamma1) / (pma_weeks ** gamma1 + pma50 ** gamma1)
 
 
-def compute_f_decline_collin(weight_kg: float, age50: float = COLLIN_AGE50,
+def compute_f_decline_collin(pma_years: float, age50: float = COLLIN_AGE50,
                               gamma2: float = COLLIN_GAMMA2) -> float:
-    """He so suy giam chuc nang than -- tai hien DUNG 100% cong thuc B46 cua Excel.
-    LUU Y: cong thuc goc B46 dung CAN NANG (o B5), KHONG dung tuoi, mac du 2 tham so
-    duoc dat ten la AGE50/gamma_2 trong sheet goc -- day la dac diem cua chinh file
-    Excel goc, ham nay chi tai hien lai chinh xac, khong suy dien lai y nghia."""
-    if weight_kg <= 0:
+    """He so suy giam chuc nang than theo TUOI -- Phuong trinh 12 bai goc Collin 2019:
+        F_decline = PMA(yr)^-g2 / (PMA(yr)^-g2 + AGE50^-g2)
+    SUA LOI (2026-10): ban truoc dung CAN NANG (chep nguyen o B46 cua Excel goc -- Excel sai so
+    voi bai bao). Da kiem dinh: cong thuc nay tai hien dung cac vi du in trong bai
+    (35 tuoi/70 kg/SCr 0.83 -> CL 4.10 L/h; 60 tuoi/65 kg/SCr 0.97 -> 2.55 L/h)."""
+    if pma_years <= 0:
         return 0.0
-    return (weight_kg ** -gamma2) / (weight_kg ** -gamma2 + age50 ** -gamma2)
+    return (pma_years ** -gamma2) / (pma_years ** -gamma2 + age50 ** -gamma2)
 
 
 def compute_scr_std_collin(age: float) -> float:
     """SCR chuan hoa theo tuoi -- tai hien cong thuc B47."""
-    if age <= 0:
+    pma_years = compute_pma_weeks_collin(age) / COLLIN_WEEKS_PER_YEAR   # Phuong trinh 5 dung PMA (nam)
+    if pma_years <= 0:
         return 0.0
-    return float(np.exp(-1.228 + np.log10(age) * 0.672 + 6.27 * np.exp(-3.11 * age)))
+    return float(np.exp(-1.228 + np.log10(pma_years) * 0.672 + 6.27 * np.exp(-3.11 * pma_years)))
 
 
 def compute_f_scr_collin(scr_mgdl: float, age: float, theta_scr: float = COLLIN_THETA_SCR) -> float:
@@ -1501,7 +1540,7 @@ def compute_population_priors_collin(patient: VancoPatientInfoCollin) -> Tuple[V
     pma_weeks = compute_pma_weeks_collin(patient.age)
     f_size = compute_f_size_collin(patient.weight_kg)
     f_mat = compute_f_mat_collin(pma_weeks)
-    f_decline = compute_f_decline_collin(patient.weight_kg)
+    f_decline = compute_f_decline_collin(pma_weeks / COLLIN_WEEKS_PER_YEAR)
     f_scr = compute_f_scr_collin(scr_mgdl, patient.age)
 
     v1_prior = compute_v1_prior_collin(patient.weight_kg, patient.is_heelprick)
@@ -1540,6 +1579,15 @@ def find_nearest_scr(scr_entries, t_obs):
     return min(scr_entries, key=lambda e: abs((e[1] - t_obs).total_seconds()))[0]
 
 
+def find_nearest_scr_entry(scr_entries, t_obs):
+    """Giống find_nearest_scr() nhưng trả về CẢ CẶP (scr_value, thời_điểm_đo) thay vì chỉ
+    giá trị — dùng làm mốc ranh giới đoạn CL bậc thang (xem build_cl_segments_vanco() và
+    solve_bayesian_sequential()). None nếu rỗng."""
+    if not scr_entries:
+        return None
+    return min(scr_entries, key=lambda e: abs((e[1] - t_obs).total_seconds()))
+
+
 def recompute_cl_prior_goti(patient: VancoPatientInfo, scr_value: float) -> float:
     """Tính lại CL_prior theo mô hình Goti 2018 nhưng dùng một giá trị SCr KHÁC (của lần
     đo gần với Tobs của một khoảng đưa liều cụ thể) — các hiệp biến còn lại (tuổi, giới
@@ -1559,7 +1607,7 @@ def recompute_cl_prior_collin(patient: VancoPatientInfoCollin, scr_value: float)
     """Tương tự recompute_cl_prior_goti() nhưng theo mô hình Collin 2019."""
     pma_weeks = compute_pma_weeks_collin(patient.age)
     f_mat = compute_f_mat_collin(pma_weeks)
-    f_decline = compute_f_decline_collin(patient.weight_kg)
+    f_decline = compute_f_decline_collin(pma_weeks / COLLIN_WEEKS_PER_YEAR)
     v1_prior = compute_v1_prior_collin(patient.weight_kg, patient.is_heelprick)
     scr_mgdl = scr_value  # da o dang mg/dL, xem ghi chu don vi trong compute_population_priors()
     f_scr = compute_f_scr_collin(scr_mgdl, patient.age)
@@ -1625,22 +1673,125 @@ def recompute_full_priors_collin(patient: VancoPatientInfoCollin, scr_value: flo
 
 
 def solve_bayesian_sequential(doses: List[VancoDose], blocks: list, recompute_priors_fn,
-                               nearest_scr_fn, sd: float = 0.34, cv: float = 0.227):
+                               nearest_scr_entry_fn, sd: float = GOTI_RES_ERR_ADD, cv: float = GOTI_RES_ERR_PROP):
     """Chạy tối ưu Bayes qua từng block (mỗi block = 1 khoảng đưa liều, có thể gồm nhiều
-    điểm đo cùng lúc). SỬA (2026-09): MỌI block — kể cả block đầu tiên — đều dùng tiền
-    nghiệm CL/Vc/Vp/Q TÍNH LẠI HOÀN TOÀN MỚI từ mô hình quần thể (recompute_priors_fn),
-    dùng SCr gần Tobs của CHÍNH block đó — KHÔNG còn kế thừa Vc/Vp hậu nghiệm của block
-    trước (xem lý do trong docstring recompute_full_priors_goti()). Nhờ vậy tiền nghiệm
-    mỗi lần TDM luôn bám đúng công thức quần thể gốc, không trôi dạt qua nhiều lần TDM.
-    Trả về list VancoBayesResult (1 phần tử/block, theo thứ tự thời gian) — phần tử CUỐI
-    là kết quả tối ưu cần hiển thị/lưu (đúng yêu cầu #4)."""
+    điểm đo cùng lúc).
+
+    (1) Tiền nghiệm: MỌI block (kể cả block đầu) dùng tiền nghiệm CL/Vc/Vp/Q TÍNH LẠI HOÀN
+    TOÀN MỚI từ mô hình quần thể (recompute_priors_fn), với SCr gần Tobs của chính block đó —
+    không kế thừa Vc/Vp hậu nghiệm của block trước (tránh trôi dạt khỏi quần thể gốc).
+
+    (2) Cpred với CL BẬC THANG (xử lý AKI): CL_post của lần TDM k là CL của KHOẢNG THỜI GIAN
+    TỪ lần TDM k-1 ĐẾN lần TDM k (lần 1: từ liều đầu tiên đến TDM 1). Khi giải block k, các
+    đoạn trước dùng CL_post CỐ ĐỊNH đã ước lượng; chỉ đoạn (TDM k-1, TDM k] dùng CL đang tối
+    ưu. Ranh giới đoạn = thời điểm đo của lần TDM trước (KHÔNG phải thời điểm lấy SCr — vì
+    SCr thường lấy cùng lúc mẫu đáy, nếu lấy làm ranh giới thì đoạn hiện tại có độ dài 0 và
+    Cobs không còn tham gia ước lượng CL).
+
+    nearest_scr_entry_fn(t_obs) -> (scr_value, thời_điểm_đo); chỉ dùng scr_value để tính CL_prior.
+    Trả về list VancoBayesResult (1 phần tử/block); phần tử CUỐI là kết quả hiển thị/lưu."""
     results = []
+    seg_start = min(d.given_at for d in doses)
+    historical_segments: List[Tuple[datetime.datetime, float]] = []
     for block in blocks:
-        scr_i = nearest_scr_fn(block["measurements"][0].t_obs)
+        scr_i, _ = nearest_scr_entry_fn(block["measurements"][0].t_obs)
         priors_i = recompute_priors_fn(scr_i)
-        res = solve_bayesian_posterior(priors_i, doses, block["measurements"], sd=sd, cv=cv)
+        res = solve_bayesian_posterior(priors_i, doses, block["measurements"], sd=sd, cv=cv,
+                                        historical_cl_segments=historical_segments,
+                                        current_segment_start=seg_start)
         res.anchor_dose = block["anchor_dose"]
         results.append(res)
         if not res.success:
             break  # Block lỗi -> dừng chuỗi, không cố tính tiếp các block sau
+        historical_segments = historical_segments + [(seg_start, res.CL_optimized)]
+        seg_start = max(m.t_obs for m in block["measurements"])
     return results
+
+def _segment_transition_2c(a1_0: float, a2_0: float, cl: float, vc: float, vp: float, q: float,
+                            rate_mg_per_h: float, dt_h: float) -> Tuple[float, float]:
+    """Chuyển trạng thái (A1, A2) — lượng thuốc trong ngăn trung tâm/ngoại vi — qua 1
+    khoảng thời gian dt_h, với CL/Vc/Vp/Q CỐ ĐỊNH trong khoảng đó và tốc độ truyền dịch
+    rate_mg_per_h KHÔNG ĐỔI trong suốt dt_h (0 nếu không có liều nào đang truyền).
+
+    Dùng công thức "zero-order hold" — nghiệm ĐÓNG (không xấp xỉ số) của hệ tuyến tính
+    dX/dt = M·X + B·rate:  X(t+dt) = e^(M·dt)·X(t) + M⁻¹·(e^(M·dt) − I)·(B·rate).
+    Đã kiểm định: khớp compute_cpred_two_compartment() tới sai số ~1e-14 khi CL không đổi,
+    và khớp lời giải ODE (scipy.integrate.solve_ivp) tới ~1e-9 khi CL đổi bậc thang (AKI)."""
+    k10, k12, k21 = cl / vc, q / vc, q / vp
+    m = np.array([[-(k10 + k12), k21], [k12, -k21]])
+    x0 = np.array([a1_0, a2_0], dtype=float)
+    e = expm(m * dt_h)
+    if rate_mg_per_h:
+        b = np.array([rate_mg_per_h, 0.0])
+        x1 = e @ x0 + np.linalg.solve(m, (e - np.eye(2)) @ b)
+    else:
+        x1 = e @ x0
+    return float(x1[0]), float(x1[1])
+
+
+def compute_cpred_two_compartment_piecewise(cl_segments: List[Tuple[datetime.datetime, float]],
+                                             vc: float, vp: float, q: float,
+                                             doses: List[VancoDose], t_obs: datetime.datetime,
+                                             t_inf_h: float) -> float:
+    """Nồng độ dự đoán tại t_obs khi CL THAY ĐỔI THEO THỜI GIAN (vd suy thận cấp — AKI) —
+    tổng quát hoá compute_cpred_two_compartment() cho trường hợp CL không hằng định suốt
+    lịch sử liều. Khi cl_segments chỉ có 1 phần tử (CL không đổi), hàm này cho kết quả
+    KHỚP TUYỆT ĐỐI compute_cpred_two_compartment() (đã kiểm định, sai số ~1e-14).
+
+    cl_segments: list (thời_điểm_bắt_đầu_hiệu_lực, CL) đã sắp xếp tăng dần theo thời gian —
+    CL có hiệu lực từ thời điểm đó cho tới thời điểm bắt đầu của đoạn kế tiếp (hoặc tới
+    t_obs nếu là đoạn cuối). Thường mỗi đoạn ứng với 1 lần đo SCr — xem
+    build_cl_segments_vanco(). Vc/Vp/Q giữ cố định xuyên suốt (không đổi theo AKI)."""
+    if not cl_segments or not doses:
+        return 0.0
+    cl_segments = sorted(cl_segments, key=lambda s: s[0])
+    doses_sorted = sorted(doses, key=lambda d: d.given_at)
+
+    def cl_at(t: datetime.datetime) -> float:
+        cl = cl_segments[0][1]
+        for t_start, c in cl_segments:
+            if t_start <= t:
+                cl = c
+        return cl
+
+    t_start_all = min(cl_segments[0][0], doses_sorted[0].given_at)
+    if t_obs <= t_start_all:
+        return 0.0
+
+    # Các mốc thời gian cần "cắt đoạn": đầu/cuối mỗi lần truyền dịch + mỗi lần đổi CL
+    breakpoints = {t_start_all, t_obs}
+    for d in doses_sorted:
+        if t_start_all <= d.given_at <= t_obs:
+            breakpoints.add(d.given_at)
+            breakpoints.add(d.given_at + datetime.timedelta(hours=t_inf_h))
+        elif d.given_at < t_start_all:
+            breakpoints.add(t_start_all)
+    for t_start, _ in cl_segments:
+        if t_start_all <= t_start <= t_obs:
+            breakpoints.add(t_start)
+    bps = sorted(t for t in breakpoints if t_start_all <= t <= t_obs)
+
+    a1, a2 = 0.0, 0.0
+    for i in range(len(bps) - 1):
+        seg_start, seg_end = bps[i], bps[i + 1]
+        dt_h = (seg_end - seg_start).total_seconds() / 3600.0
+        if dt_h <= 1e-12:
+            continue
+        cl_seg = cl_at(seg_start)
+        rate = 0.0
+        for d in doses_sorted:
+            if d.given_at <= seg_start < d.given_at + datetime.timedelta(hours=t_inf_h):
+                rate += d.dose_mg / t_inf_h
+        a1, a2 = _segment_transition_2c(a1, a2, cl_seg, vc, vp, q, rate, dt_h)
+    return a1 / vc
+
+
+def build_cl_segments_vanco(scr_entries, recompute_priors_fn) -> List[Tuple[datetime.datetime, float]]:
+    """Dựng danh sách đoạn (thời_điểm, CL) từ các lần đo SCr đã nhập — mỗi lần đo SCr mới
+    mở ra 1 đoạn CL mới, có hiệu lực từ đúng thời điểm đo đó. scr_entries: list (giá_trị_
+    mg/dL, thời_điểm_đo). recompute_priors_fn(scr_value) -> VancoPriors (đã có sẵn, dùng
+    lại recompute_full_priors_goti/collin) — chỉ lấy .cl_prior để làm CL của đoạn."""
+    if not scr_entries:
+        return []
+    entries_sorted = sorted(scr_entries, key=lambda e: e[1])
+    return [(dt, recompute_priors_fn(scr).cl_prior) for scr, dt in entries_sorted]
