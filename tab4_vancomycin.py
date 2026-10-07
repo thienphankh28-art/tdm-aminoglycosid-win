@@ -36,6 +36,13 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import database as db
 
+try:                                    # 4 mô hình chạy như Tucuxi — nếu thiếu file thì tab vẫn chạy với 2 mô hình cũ
+    import tucuxi_engine as tue
+    import tucuxi_batch as tub
+except Exception:                       # pragma: no cover
+    tue = None
+    tub = None
+
 from vanco_calculations import (
 
     VancoPatientInfo, VancoDose, VancoMeasurement,
@@ -417,6 +424,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self._build_chart_section()
 
         self._build_save_section()
+        self._build_batch_section()
 
 
 
@@ -472,8 +480,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         ctk.CTkLabel(method_row, text="⚙️ Phương pháp tính Bayes:", font=FONT_SMALL).pack(side="left", padx=(0, 8))
         self.method_var = ctk.StringVar(value="Goti 2018")
         self.method_menu = ctk.CTkOptionMenu(
-            method_row, values=["Goti 2018", "Collin 2019"], variable=self.method_var,
-            width=200, command=self.on_method_change)
+            method_row, values=self.METHOD_CHOICES, variable=self.method_var,
+            width=220, command=self.on_method_change)
         self.method_menu.pack(side="left")
 
         # --- Thông tin dân số áp dụng của mô hình đang chọn — cập nhật trong on_method_change() ---
@@ -609,6 +617,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         # --- Các trường riêng cho Collin 2019 — được tạo sẵn nhưng ẨN mặc định,
         #     chỉ hiện khi người dùng chọn phương pháp "Collin 2019" (xem on_method_change) ---
         self.v_malignancy_check = LabeledCheck(c3, "Bệnh máu ác tính (STDY10)", default=False)
+        self.v_gpos_check = LabeledCheck(c3, "Nhiễm khuẩn Gram dương (dis_gpos — Yamamoto)", default=True)
         self.v_heelprick_check = LabeledCheck(c3, "Mẫu lấy gót chân - Heel-prick (STDY13)", default=False)
 
         ctk.CTkLabel(self, text="1b. Các lần đo SCr (Creatinin huyết thanh)", font=FONT_SMALL,
@@ -735,23 +744,53 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         ),
     }
 
+    METHOD_CHOICES = ["Goti 2018", "Collin 2019"] + (list(tue.MODEL_FILES) if tue else [])
+
+    _TUCUXI_NOTE = (
+        "\nℹ️ Chạy NHƯ TUCUXI từ file .tdd gốc: một bộ η cho toàn bộ lịch sử, CL đổi theo ngày theo SCr "
+        "(nội suy tuyến tính), CrCl = Cockcroft–Gault, không sàn SCr/không cap. Khác 2 phương pháp trên "
+        "(giải tuần tự từng lần TDM, tiền nghiệm tính lại mỗi lần)."
+    )
+    POPULATION_INFO["tucuxi.goti"] = (
+        "👥 Mô hình Goti 2018 theo file Tucuxi: người lớn (>16 tuổi) nằm viện/ICU, có hệ số lọc máu ngắt quãng (HD). "
+        "CL = 4,5·(CrCl/120)^0,8 với CrCl Cockcroft–Gault do Tucuxi tính từ SCr, không sàn SCr và không giới hạn trên; "
+        "V2 cố định 38,4 L." + _TUCUXI_NOTE
+    )
+    POPULATION_INFO["tucuxi.collin"] = (
+        "👥 Mô hình Collin 2019 theo file Tucuxi: mọi lứa tuổi (sơ sinh → rất cao tuổi), thể trạng cực đoan, ung thư máu "
+        "(ô 'Bệnh máu ác tính' = dis_haem). Không có hiệp biến lấy gót chân. Lưu ý: file .tdd lưu phương sai trong "
+        "thẻ stdDev nên biến thiên cá thể hiệu dụng rất chặt — mô hình ít 'học' từ nồng độ đo." + _TUCUXI_NOTE
+    )
+    POPULATION_INFO["tucuxi.thomson"] = (
+        "👥 Mô hình Thomson 2009 theo file Tucuxi: người lớn điều trị vancomycin thường quy (398 bệnh nhân xây dựng mô hình). "
+        "CL phụ thuộc CrCl Cockcroft–Gault (cân nặng thực), V1 = 0,675 L/kg, V2 = 0,732 L/kg. File .tdd ghi chú việc dùng "
+        "CLcr còn cần xác nhận." + _TUCUXI_NOTE
+    )
+    POPULATION_INFO["tucuxi.yamamoto"] = (
+        "👥 Mô hình Yamamoto 2009 theo file Tucuxi: người lớn nhiễm khuẩn Gram dương (đặc biệt viêm phổi), CL tuyến tính theo "
+        "CrCl khi < 85 mL/phút và hằng số khi ≥ 85. Ô 'Nhiễm Gram dương' đổi V1/V2. File .tdd không tự tính CrCl: phần "
+        "mềm cấp CrCl Cockcroft–Gault từ SCr (như Goti/Thomson). Sai số dư tỉ lệ 14,3%." + _TUCUXI_NOTE
+    )
+
     def on_method_change(self, choice=None):
-        """Chuyển đổi hiển thị giữa 2 phương pháp: Goti 2018 (mặc định, giữ nguyên như cũ)
-        và Collin 2019 (hiện thêm 2 trường hiệp biến, ẩn trường lọc máu vốn không dùng đến)."""
+        """Chuyển đổi hiển thị giữa các phương pháp: Goti 2018 (mặc định), Collin 2019 và 4 mô hình tucuxi.*."""
         method = self.method_var.get()
         self.method_population_label.configure(text=self.POPULATION_INFO.get(method, ""))
+        for w in (self.v_dialysis_check, self.v_malignancy_check, self.v_heelprick_check, self.v_gpos_check):
+            w.pack_forget()
         if method == "Collin 2019":
-            self.v_dialysis_check.pack_forget()
             self.v_malignancy_check.pack(fill="x", pady=(10, 4))
             self.v_heelprick_check.pack(fill="x", pady=(4, 4))
-        else:
-            self.v_malignancy_check.pack_forget()
-            self.v_heelprick_check.pack_forget()
+        elif method == "tucuxi.collin":
+            self.v_malignancy_check.pack(fill="x", pady=(10, 4))
+        elif method == "tucuxi.yamamoto":
+            self.v_gpos_check.pack(fill="x", pady=(10, 4))
+        elif method == "tucuxi.thomson":
+            pass
+        else:                                   # Goti 2018 và tucuxi.goti
             self.v_dialysis_check.pack(fill="x", pady=(10, 4))
         # Tính lại ngay các thẻ tiền nghiệm (Mục 2) theo phương pháp vừa chọn
         self.calc_priors()
-
-
 
     def load_patient_vanco(self):
 
@@ -812,6 +851,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self.method_var.set(record.get("method") or "Goti 2018")
         self.v_malignancy_check.set(bool(record.get("is_malignancy")))
         self.v_heelprick_check.set(bool(record.get("is_heelprick")))
+        # tucuxi.yamamoto: cờ "nhiễm Gram dương" được lưu ở cột is_heelprick (cột này không dùng cho mô hình đó)
+        self.v_gpos_check.set(bool(record.get("is_heelprick")) if record.get("method") == "tucuxi.yamamoto" else True)
         self.on_method_change()
 
         # --- 1b) Các lần đo SCr đã nhập ở lần trước (scr_json); nếu chưa có thì dùng "scr" đơn cũ ---
@@ -955,8 +996,125 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
+    # ===================================================================================
+    # 4 mô hình chạy như Tucuxi (tucuxi.goti / .collin / .thomson / .yamamoto)
+    # ===================================================================================
+    def _tucuxi_patient(self, method):
+        return tue.TuPatient(
+            age_years=self.v_age_entry.get_float(50.0),
+            male=(self.v_gender_opt.get() == "nam"),
+            weight_kg=self.v_weight_entry.get_float(60.0),
+            hemodialysis=bool(self.v_dialysis_check.get()) if method == "tucuxi.goti" else False,
+            haem_malignancy=bool(self.v_malignancy_check.get()) if method == "tucuxi.collin" else False,
+            gram_positive=bool(self.v_gpos_check.get()) if method == "tucuxi.yamamoto" else True,
+        )
+
+    def _tucuxi_scr_umol(self):
+        """SCr nhập ở Mục 1b (đã quy về mg/dL) -> μmol/L cho engine."""
+        return [(dt, v * 88.4) for v, dt in self._get_scr_entries()]
+
+    def _tucuxi_doses(self, doses, measurements):
+        """Danh sách (thời điểm, mg, thời gian truyền h). Thời gian truyền lấy từ điểm đo có liều neo là liều đó;
+        liều chưa có điểm đo dùng giá trị của lần đo kế sau (hoặc lần đo cuối)."""
+        doses = sorted(doses, key=lambda d: d.given_at)
+        anchors = {}
+        for mm in measurements:
+            prior = [d for d in doses if d.given_at <= mm.t_obs]
+            if prior:
+                anchors[max(prior, key=lambda d: d.given_at).given_at] = mm.t_inf_h
+        keys = sorted(anchors)
+        default = measurements[0].t_inf_h if measurements else 1.0
+        out = []
+        for d in doses:
+            nxt = [k for k in keys if k >= d.given_at]
+            tinf = anchors[nxt[0]] if nxt else (anchors[keys[-1]] if keys else default)
+            out.append((d.given_at, d.dose_mg, tinf))
+        return out
+
+    def _calc_priors_tucuxi(self, method):
+        import types
+        if tue is None:
+            self.priors, self.prior_details = None, None
+            return
+        pat = self._tucuxi_patient(method)
+        scr = self._tucuxi_scr_umol() or [(datetime.datetime.now(), 80.0)]
+        doses = self._get_doses()
+        t_ref = max([e[0] for e in scr] + [d.given_at for d in doses])
+        ps, cov, model = tue.population_params(method, pat, scr, t_ref)
+        sd = {p.id: p.sd for p in model.eta_params}
+        self.priors = types.SimpleNamespace(
+            q_prior=ps["Q"], cl_prior=ps["CL"], vc_prior=ps["V1"], vp_prior=ps["V2"],
+            omega_cl=sd.get("CL", 0.0), omega_vc=sd.get("V1", 0.0), omega_vp=sd.get("V2", 0.0))
+        self.prior_details = {"covariates": cov}
+        uses_clcr = any("clcr" in p.inputs for p in model.params)
+        self.card_crcl.set_value(f"{cov['clcr']:.1f} (Cockcroft–Gault, Tucuxi)" if uses_clcr and "clcr" in cov
+                                 else "— (mô hình không dùng CrCl)")
+        self.card_cl_prior.set_value(f"{ps['CL']:.3f}")
+        self.card_vc_prior.set_value(f"{ps['V1']:.2f}")
+        self.card_vp_prior.set_value(f"{ps['V2']:.2f}")
+        omegas = "  |  ".join(f"ω{k} = {v:g}" for k, v in sd.items())
+        sig = model.sigmas
+        err = (f"SD = {sig[0]:g}  |  CV = {sig[1]:g}" if model.err_type == "mixed"
+               else f"CV (tỉ lệ) = {sig[0]:g}")
+        bsv_kind = "proportional (P·(1+η))" if any(p.bsv_type == "proportional" for p in model.eta_params) \
+            else "exponential (P·e^η)"
+        self.priors_info_label.configure(text=(
+            f"• Q = {ps['Q']:.3f} L/h" + (" (cố định)" if all(p.id != "Q" for p in model.eta_params) else " (có biến thiên cá thể)") + "\n"
+            f"• BSV {bsv_kind}: {omegas}  (giá trị trong thẻ stdDev của .tdd dùng nguyên như độ lệch chuẩn)\n"
+            f"• Sai số dư ({model.err_type}): {err}   •   Tiền nghiệm tính tại {t_ref:%Y-%m-%d %H:%M}"
+        ))
+
+    def _run_tucuxi_solve(self, doses, measurements, scr_entries):
+        method = self.method_var.get()
+        if tue is None:
+            self.solve_status.show("❌ Thiếu module tucuxi_engine.py — không chạy được phương pháp này.", "error")
+            return
+        pat = self._tucuxi_patient(method)
+        d3 = self._tucuxi_doses(doses, measurements)
+        scr = [(dt, v * 88.4) for v, dt in scr_entries]
+        samples = [(mm.t_obs, mm.c_obs) for mm in measurements]
+        try:
+            fit = tue.tucuxi_fit(method, pat, d3, scr, samples)
+        except Exception as exc:
+            self.solve_status.show(f"❌ Lỗi tính {method}: {exc}", "error")
+            return
+        a = fit.anchor_dose
+        if a is not None:
+            fit.anchor_dose = VancoDose(dose_mg=a.dose_mg, given_at=a.t)
+        self.block_results = [fit]
+        self.bayes_result = fit
+        self.measurement_used = measurements
+        self.doses_used = doses
+        etas = ", ".join(f"η{p.id} = {e:+.3f}" for e, p in zip(fit.etas, fit.model.eta_params))
+        self.solve_status.show(
+            f"✅ {method}: MAP hội tụ với {len(samples)} nồng độ (1 bộ η cho toàn lịch sử) — {etas}", "success")
+        self.card_cl_post.set_value(f"{fit.CL_optimized:.4f}")
+        self.card_vc_post.set_value(f"{fit.Vc_optimized:.2f}")
+        self.card_vp_post.set_value(f"{fit.Vp_optimized:.2f}")
+        self.card_cpred_final.set_value(f"{fit.C_pred_final:.3f}")
+        self.card_ofv_final.set_value(f"{fit.OFV_final:.4f}")
+        self.card_k10.set_value(f"{fit.k10:.4f}")
+        self.card_k12.set_value(f"{fit.k12:.4f}")
+        self.card_k21.set_value(f"{fit.k21:.4f}")
+        self.card_alpha.set_value(f"{fit.alpha:.4f}")
+        self.card_beta.set_value(f"{fit.beta:.4f}")
+        self.calc_auc()
+        self.calc_auc_current()
+        self.refresh_chart()
+
+    def _tucuxi_curve(self, r, meas_list):
+        t_start = min(d.given_at for d in self.doses_used)
+        t_end = max([mm.t_obs for mm in meas_list] + [d.given_at for d in self.doses_used]) + datetime.timedelta(hours=12)
+        total_min = max(int((t_end - t_start).total_seconds() / 60), 60)
+        step = max(10, total_min // 1500)
+        times = [t_start + datetime.timedelta(minutes=step * i) for i in range(total_min // step + 1)]
+        return times, r.predict(times)
+
     def calc_priors(self):
         method = self.method_var.get() if hasattr(self, "method_var") else "Goti 2018"
+        if method.startswith("tucuxi."):
+            self._calc_priors_tucuxi(method)
+            return
 
         if method == "Collin 2019":
             # --- Phương pháp Collin 2019: tiền nghiệm tính theo hiệp biến bệnh nhân ---
@@ -1329,6 +1487,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             self.solve_status.show("⚠️ Vui lòng nhập ít nhất 1 lần đo SCr ở Mục 1b.", "warning")
             return
 
+        if self.method_var.get().startswith("tucuxi."):
+            self._run_tucuxi_solve(doses, measurements, scr_entries)
+            return
         blocks, orphans = group_measurements_by_dose_block(measurements, doses)
         if not blocks:
             self.solve_status.show(
@@ -1512,6 +1673,15 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
             t += datetime.timedelta(hours=new_tau)
 
         full_doses = self._get_doses() + new_regimen_doses
+        if hasattr(self.bayes_result, "predict"):          # tucuxi.*: mô phỏng lại bằng chính engine (CL theo SCr mới nhất)
+            cpred = self.bayes_result.predict(
+                [target_time], extra_doses=[tue.Intake(d.given_at, d.dose_mg, new_tinf) for d in new_regimen_doses])[0]
+            self.card_cpred_predict.set_value(f"{cpred:.2f} μg/mL")
+            note = " (mặc định: 30 phút trước liều thứ 5 của chế độ mới)" if is_default else " (do người dùng nhập)"
+            self.cpred_predict_time_label.configure(text=(
+                f"⏱ Thời điểm tính: {target_time.strftime('%Y-%m-%d %H:%M')}{note} — engine Tucuxi: "
+                f"{len(self._get_doses())} liều ở Mục 3 + {len(new_regimen_doses)} liều của chế độ mới."))
+            return
         q = self.priors.q_prior if self.priors is not None else 6.5
 
         # SỬA (2026-09, xử lý AKI): dùng CL BẬC THANG từ TOÀN BỘ các lần TDM đã giải (không
@@ -1613,9 +1783,12 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         t_inf_for_curve = meas_list[0].t_inf_h if meas_list else 1.0
         t_end = (max(m.t_obs for m in meas_list) if meas_list else datetime.datetime.now()) + datetime.timedelta(hours=6)
 
-        times, concs = simulate_concentration_curve(
-            r.CL_optimized, r.Vc_optimized, r.Vp_optimized, q,
-            self.doses_used, t_inf_for_curve, t_end=t_end)
+        if hasattr(r, "predict"):
+            times, concs = self._tucuxi_curve(r, meas_list)
+        else:
+            times, concs = simulate_concentration_curve(
+                r.CL_optimized, r.Vc_optimized, r.Vp_optimized, q,
+                self.doses_used, t_inf_for_curve, t_end=t_end)
 
 
 
@@ -1786,9 +1959,12 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         height_v = self.v_height_entry.get_float(165.0)
         weight_v = self.v_weight_entry.get_float(60.0)
         scr_v = self._get_representative_scr()
-        is_dialysis_v = int(self.v_dialysis_check.get()) if method != "Collin 2019" else 0
-        is_malignancy_v = int(self.v_malignancy_check.get()) if method == "Collin 2019" else 0
+        collin_like = method in ("Collin 2019", "tucuxi.collin")
+        is_dialysis_v = int(self.v_dialysis_check.get()) if (not collin_like and method not in ("tucuxi.thomson", "tucuxi.yamamoto")) else 0
+        is_malignancy_v = int(self.v_malignancy_check.get()) if collin_like else 0
         is_heelprick_v = int(self.v_heelprick_check.get()) if method == "Collin 2019" else 0
+        if method == "tucuxi.yamamoto":                 # cờ Gram dương lưu tạm ở cột is_heelprick
+            is_heelprick_v = int(self.v_gpos_check.get())
 
         r = self.bayes_result
         m = self.measurement_used[-1]  # điểm đo gần nhất của lần TDM cuối cùng — đại diện lưu vào lịch sử
@@ -1853,3 +2029,96 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
             self.save_status.show(f"⚠️ Lưu chưa trọn vẹn: {combined}", "error")
 
+    # ===================================================================================
+    # 9. Tính Bayes hàng loạt từ file Excel (bốn mô hình tucuxi.*)
+    # ===================================================================================
+    def _build_batch_section(self):
+        if tue is None or tub is None:
+            return
+        import threading  # noqa: F401  (dùng trong _batch_run)
+        self._section_header("9. Tính Bayes hàng loạt từ file Excel (mô hình tucuxi.*)")
+        ctk.CTkLabel(
+            self, justify="left", wraplength=900, font=FONT_SMALL, text_color=("gray40", "gray70"),
+            text=("Nhập nhiều bệnh nhân cùng lúc theo mẫu Excel (sheet 'data dữ liệu', dữ liệu từ hàng 3: tuổi nam cột B / nữ cột C, "
+                  "cân nặng D, chiều cao E; dòng liều: Từ F, Đến G, liều mg H, τ(h) I, thời gian truyền(h) J; dòng xét nghiệm: "
+                  "thời điểm F, SCr μmol/L K, nồng độ M). Kết quả: rBias/APE từng lần TDM và thống kê rRMSE, MdAPE, P20/P30 theo mô hình.")
+        ).pack(anchor="w", padx=6, pady=(0, 6))
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=6, pady=(0, 6))
+        self.batch_path_var = ctk.StringVar(value="")
+        ctk.CTkEntry(row, textvariable=self.batch_path_var,
+                     placeholder_text="Đường dẫn file Excel đầu vào...").pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ctk.CTkButton(row, text="📂 Chọn file", width=110, command=self._batch_pick_file).pack(side="left")
+        mrow = ctk.CTkFrame(self, fg_color="transparent")
+        mrow.pack(fill="x", padx=6, pady=(0, 4))
+        self.batch_model_vars = {}
+        for key in tue.MODEL_FILES:
+            var = ctk.BooleanVar(value=True)
+            self.batch_model_vars[key] = var
+            ctk.CTkCheckBox(mrow, text=key, variable=var, width=130).pack(side="left", padx=(0, 10))
+        orow = ctk.CTkFrame(self, fg_color="transparent")
+        orow.pack(fill="x", padx=6, pady=(0, 4))
+        self.batch_cumulative_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(orow, variable=self.batch_cumulative_var,
+                        text="Khớp CỘNG DỒN (dùng mọi nồng độ đến lần TDM N). Bỏ chọn = chỉ nồng độ lần N, như bộ dữ liệu mẫu Tucuxi"
+                        ).pack(anchor="w")
+        self.batch_gpos_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(orow, variable=self.batch_gpos_var,
+                        text="Yamamoto: coi bệnh nhân nhiễm khuẩn Gram dương (mặc định của file .tdd)").pack(anchor="w", pady=(4, 0))
+        self.batch_btn = ctk.CTkButton(self, text="▶ CHẠY HÀNG LOẠT & XUẤT EXCEL", height=38, fg_color="#8250df",
+                                       hover_color="#6639ba", command=self._batch_run)
+        self.batch_btn.pack(fill="x", padx=6, pady=(4, 4))
+        self.batch_progress = ctk.CTkProgressBar(self)
+        self.batch_progress.set(0)
+        self.batch_progress.pack(fill="x", padx=6, pady=(0, 4))
+        self.batch_status = StatusLabel(self)
+        self.batch_status.pack(fill="x", padx=6, pady=(0, 20))
+
+    def _batch_pick_file(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="Chọn file Excel đầu vào", filetypes=[("Excel", "*.xlsx *.xlsm")])
+        if path:
+            self.batch_path_var.set(path)
+
+    def _batch_run(self):
+        import threading
+        from tkinter import filedialog
+        src = self.batch_path_var.get().strip()
+        if not src:
+            self.batch_status.show("⚠️ Hãy chọn file Excel đầu vào.", "warning")
+            return
+        models = [k for k, v in self.batch_model_vars.items() if v.get()]
+        if not models:
+            self.batch_status.show("⚠️ Hãy chọn ít nhất 1 mô hình.", "warning")
+            return
+        out = filedialog.asksaveasfilename(
+            title="Lưu kết quả Excel", defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")],
+            initialfile=f"ketqua_tucuxi_{datetime.datetime.now():%Y%m%d_%H%M}.xlsx")
+        if not out:
+            return
+        cumulative, gpos = bool(self.batch_cumulative_var.get()), bool(self.batch_gpos_var.get())
+        self.batch_btn.configure(state="disabled")
+        self.batch_progress.set(0)
+        self.batch_status.show("⏳ Đang tính... (có thể mất vài phút với nhiều bệnh nhân)", "info")
+
+        def progress(done, total, label):
+            self.after(0, lambda: (self.batch_progress.set(done / max(total, 1)),
+                                   self.batch_status.show(f"⏳ {done}/{total} — {label}", "info")))
+
+        def worker():
+            try:
+                res = tub.run_batch(src, out, models=models, cumulative=cumulative, gram_positive=gpos, progress=progress)
+                lines = []
+                for m, summ in res["summary"].items():
+                    s2 = summ.get("Bayes N−1→N (TDM ≥ 2)", {})
+                    s1 = summ.get("Tiên nghiệm (TDM 1)", {})
+                    lines.append(f"{m}: rRMSE tiên nghiệm {s1.get('rrmse', float('nan')):.1f}% (n={s1.get('n', 0)}), "
+                                 f"N−1→N {s2.get('rrmse', float('nan')):.1f}% (n={s2.get('n', 0)})")
+                msg = (f"✅ Xong {res['n_cases']} bệnh nhân (bỏ qua {res['n_skipped']}). Đã lưu: {out}\n" + "\n".join(lines))
+                self.after(0, lambda: (self.batch_status.show(msg, "success"), self.batch_progress.set(1)))
+            except Exception as exc:
+                self.after(0, lambda e=exc: self.batch_status.show(f"❌ Lỗi tính hàng loạt: {e}", "error"))
+            finally:
+                self.after(0, lambda: self.batch_btn.configure(state="normal"))
+
+        threading.Thread(target=worker, daemon=True).start()

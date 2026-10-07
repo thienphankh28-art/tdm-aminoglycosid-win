@@ -35,9 +35,12 @@ GITHUB_VERSION_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-am
 GITHUB_CODE_BASE_URL = "https://raw.githubusercontent.com/thienphankh28-art/tdm-aminoglycosid-win/main/"
 
 FILES_TO_UPDATE = [
-    "app.py", "ui_common.py", "login_frame.py", "login_frame.py", "ui_common.py",
+    "app.py", "ui_common.py", "login_frame.py",
     "tab1_aminoglycosid.py", "tab2_patient_db.py", "tab3_info.py", "tab4_vancomycin.py",
-    "database.py", "pk_calculations.py", "amg_bayesian_calculations.py", "vanco_calculations.py", "version.json"
+    "database.py", "pk_calculations.py", "amg_bayesian_calculations.py", "vanco_calculations.py", "version.json",
+    "tucuxi_engine.py", "tucuxi_batch.py",
+    "ch.tucuxi.vancomycin.goti2018.tdd", "ch.tucuxi.vancomycin.colin2019.tdd",
+    "ch.tucuxi.vancomycin.thomson2009.tdd", "ch.tucuxi.vancomycin.yamamoto2009.tdd",
 ]
 
 # ---------------------------------------------------------
@@ -191,7 +194,8 @@ def launch_desktop_app():
     # phiên bản mới nhất trên đĩa (BASE_DIR) được nạp lại.
     for mod_name in ("app", "ui_common", "login_frame", "tab1_aminoglycosid",
                      "tab2_patient_db", "tab3_info", "tab4_vancomycin",
-                     "database", "pk_calculations", "vanco_calculations"):
+                     "database", "pk_calculations", "amg_bayesian_calculations", "vanco_calculations",
+                     "tucuxi_engine", "tucuxi_batch"):
         if mod_name in sys.modules:
             del sys.modules[mod_name]
 
