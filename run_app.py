@@ -216,6 +216,15 @@ def launch_desktop_app():
         log_update("❌ Không tìm thấy hàm main() trong app.py. Không thể khởi chạy giao diện.")
         sys.exit(1)
 
+def start_app():
+    """
+    Điểm vào cho launcher.py (bản .exe dùng các module .pyd): launcher đã tự kiểm tra và tải
+    các file .pyd / .tdd mới từ GitHub, nên ở đây KHÔNG gọi check_and_update() (hàm đó tải
+    file .py nguồn — không phù hợp khi đã biên dịch .pyd) mà chỉ khởi chạy giao diện.
+    """
+    launch_desktop_app()
+
+
 if __name__ == "__main__":
     check_and_update()
     launch_desktop_app()
