@@ -1424,6 +1424,17 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self.card_auc_current = MetricCard(row3, "AUC hiện tại (mg·h/L)")
 
         self.card_auc_current.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            row3, text="AUC ngày TDM = AUC₀₋₂₄ MÔ PHỎNG theo đúng các liều đã dùng (kể cả tích lũy, CL thay đổi theo SCr/AKI), "
+                       "tính trong 24 h kể từ liều kề trước các điểm đo; liều chưa nhập trong cửa sổ được giả định tiếp tục theo chế độ liều cuối.",
+            font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left"
+        ).pack(anchor="w", pady=(8, 4))
+        self.card_auc_day = MetricCard(row3, "AUC ngày TDM — 24 h thực tế (mg·h/L)")
+        self.card_auc_day.pack(fill="x", padx=4, pady=4)
+        self.auc_day_value = None
+        self.auc_day_label = ctk.CTkLabel(row3, text="", font=FONT_SMALL, text_color=("gray40", "gray70"),
+                                          wraplength=900, justify="left")
+        self.auc_day_label.pack(anchor="w", padx=4)
 
 
 
@@ -1441,6 +1452,83 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         return None
 
     def calc_auc_current(self):
+        """AUC cân bằng (công thức cũ) + AUC ngày TDM (mô phỏng 24 h thực tế)."""
+        auc = self._calc_auc_steady()
+        try:
+            self.calc_auc_day()
+        except Exception as exc:                      # không để lỗi phụ làm hỏng luồng chính
+            self.card_auc_day.set_value("Không tính được")
+            self.auc_day_value = None
+            self.auc_day_label.configure(text=f"({exc})")
+        return auc
+
+    def _cl_segments_for_sim(self):
+        """CL bậc thang cho mô hình cũ (Goti/Collin của app) — cùng cách dùng ở calc_cpred_prediction."""
+        doses = self._get_doses()
+        segs = []
+        seg_start = min(d.given_at for d in doses)
+        for r in getattr(self, "block_results", []):
+            if not r.points:
+                continue
+            segs.append((seg_start, r.CL_optimized))
+            seg_start = max(p["t_obs"] for p in r.points)
+        if not segs:
+            segs = [(seg_start, self.bayes_result.CL_optimized)]
+        return segs
+
+    def calc_auc_day(self):
+        """AUC₀₋₂₄ của NGÀY thực hiện TDM: tích phân (hình thang, bước 5 phút) đường cong nồng độ mô phỏng
+        bằng tham số Bayes, trong 24 h kể từ thời điểm liều neo (liều kề trước các điểm đo của lần TDM cuối).
+        Khác AUC cân bằng ở chỗ phản ánh liều thực tế đã dùng + tích lũy chưa đạt steady-state + CL hiện tại."""
+        self.auc_day_value = None
+        if self.bayes_result is None or not self.bayes_result.success or not self.dose_rows:
+            self.card_auc_day.set_value("Chưa chạy solve Bayes")
+            self.auc_day_label.configure(text="")
+            return None
+        anchor_dose = getattr(self.bayes_result, "anchor_dose", None)
+        anchor_row = self._find_dose_row_for(anchor_dose)
+        if anchor_row is None:
+            anchor_row = max(self.dose_rows, key=lambda r: r.get_dose().given_at)
+        t0 = anchor_row.get_dose().given_at
+        t1 = t0 + datetime.timedelta(hours=24)
+        recorded = self._get_doses()
+        last_row = max(self.dose_rows, key=lambda r: r.get_dose().given_at)
+        last_d, tau_l = last_row.get_dose(), last_row.get_tau()
+        meas = self.measurement_used or []
+        tinf = meas[0].t_inf_h if meas else 1.0
+        projected = []
+        if tau_l > 0:                                  # doses chưa nhập nhưng nằm trong cửa sổ 24 h → giả định tiếp tục chế độ liều cuối
+            t = last_d.given_at + datetime.timedelta(hours=tau_l)
+            while t < t1 and len(projected) < 200:
+                projected.append(VancoDose(dose_mg=last_d.dose_mg, given_at=t))
+                t += datetime.timedelta(hours=tau_l)
+        step = 5
+        n = 24 * 60 // step
+        times = [t0 + datetime.timedelta(minutes=step * i) for i in range(n + 1)]
+        if hasattr(self.bayes_result, "predict"):
+            concs = self.bayes_result.predict(
+                times, extra_doses=[tue.Intake(d.given_at, d.dose_mg, tinf) for d in projected])
+        else:
+            q = self.priors.q_prior if self.priors is not None else 6.5
+            segs = self._cl_segments_for_sim()
+            full = list(recorded) + projected
+            concs = [compute_cpred_two_compartment_piecewise(
+                segs, self.bayes_result.Vc_optimized, self.bayes_result.Vp_optimized, q, full, tt, tinf)
+                for tt in times]
+        auc = sum((concs[i] + concs[i + 1]) * 0.5 * (step / 60.0) for i in range(n))
+        self.auc_day_value = auc
+        steady = getattr(self, "auc_current_value", None)
+        txt = f"{auc:.2f} mg·h/L"
+        self.card_auc_day.set_value(txt)
+        in_win = sum(1 for d in recorded if t0 <= d.given_at < t1)
+        info = (f"Cửa sổ: {t0.strftime('%Y-%m-%d %H:%M')} → {t1.strftime('%Y-%m-%d %H:%M')} · "
+                f"{in_win} liều đã nhập + {len(projected)} liều giả định tiếp tục ({last_d.dose_mg:.0f} mg q{tau_l:g}h).")
+        if steady:
+            info += f" So với AUC cân bằng: {auc / steady * 100:.0f}% ({auc - steady:+.1f})."
+        self.auc_day_label.configure(text=info)
+        return auc
+
+    def _calc_auc_steady(self):
         """AUC hiện tại = Liều đang dùng (liều neo — kề trước các điểm đo của LẦN TDM
         cuối cùng vừa tối ưu) × 24 / (τ của liều đó × Clbn vừa tối ưu Bayes)."""
         if self.bayes_result is None or not self.bayes_result.success:
