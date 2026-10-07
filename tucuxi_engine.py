@@ -430,6 +430,12 @@ class TuFit:
             out.append(cache[g])
         return out
 
+    def params_at_cycle(self, t: datetime.datetime) -> Dict[str, float]:
+        """Tham số hậu nghiệm (CL, V1, V2, Q) của chu kỳ liều đang hiệu lực tại thời điểm t — đúng cách
+        cột 'CL tại thời điểm TDM N' của Tucuxi: bộ tham số gắn với liều gần nhất trước t."""
+        its = [i for i in self.intakes if i.t <= t] or self.intakes[:1]
+        return self._psets_for([max(its, key=lambda i: i.t)], self.etas)[0]
+
     def predict(self, times: List[datetime.datetime], extra_doses: Optional[List[Intake]] = None,
                 kind: str = "post") -> List[float]:
         intakes = sorted(self.intakes + (extra_doses or []), key=lambda i: i.t)

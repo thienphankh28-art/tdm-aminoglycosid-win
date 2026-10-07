@@ -1086,8 +1086,18 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self.measurement_used = measurements
         self.doses_used = doses
         etas = ", ".join(f"η{p.id} = {e:+.3f}" for e, p in zip(fit.etas, fit.model.eta_params))
+        cyc = ""
+        try:
+            tN = max(sm[0] for sm in fit.samples) if getattr(fit, "samples", None) else None
+            if tN is not None:
+                pc = fit.params_at_cycle(tN)
+                cyc = (f"\nCL_optimized ở trên = CL tại thời điểm mới nhất (SCr mới nhất). "
+                       f"CL của chu kỳ liều chứa TDM N (cách Tucuxi báo) = {pc['CL']:.3f} L/h, "
+                       f"V1 = {pc['V1']:.2f}, V2 = {pc['V2']:.2f}, Q = {pc['Q']:.2f}.")
+        except Exception:
+            cyc = ""
         self.solve_status.show(
-            f"✅ {method}: MAP hội tụ với {len(samples)} nồng độ (1 bộ η cho toàn lịch sử) — {etas}", "success")
+            f"✅ {method}: MAP hội tụ với {len(samples)} nồng độ (1 bộ η cho toàn lịch sử) — {etas}{cyc}", "success")
         self.card_cl_post.set_value(f"{fit.CL_optimized:.4f}")
         self.card_vc_post.set_value(f"{fit.Vc_optimized:.2f}")
         self.card_vp_post.set_value(f"{fit.Vp_optimized:.2f}")
