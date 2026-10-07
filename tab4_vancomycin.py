@@ -1056,8 +1056,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         sig = model.sigmas
         err = (f"SD = {sig[0]:g}  |  CV = {sig[1]:g}" if model.err_type == "mixed"
                else f"CV (tỉ lệ) = {sig[0]:g}")
-        bsv_kind = "proportional (P·(1+η))" if any(p.bsv_type == "proportional" for p in model.eta_params) \
-            else "exponential (P·e^η)"
+        bsv_kind = ("proportional (P·(1+η))" if any(p.bsv_type == "proportional" for p in model.eta_params)
+                    else "exponential (P·e^η)")
         self.priors_info_label.configure(text=(
             f"• Q = {ps['Q']:.3f} L/h" + (" (cố định)" if all(p.id != "Q" for p in model.eta_params) else " (có biến thiên cá thể)") + "\n"
             f"• BSV {bsv_kind}: {omegas}  (giá trị trong thẻ stdDev của .tdd dùng nguyên như độ lệch chuẩn)\n"

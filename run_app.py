@@ -163,7 +163,7 @@ def check_and_update():
             target_path = os.path.join(BASE_DIR, file_name)
             # Ép buộc đồng bộ chuẩn xuống dòng Windows (CRLF) tránh lỗi Mixed Newlines
             lines = file_res.text.splitlines()
-            with open(target_path, "w", encoding="utf-8") as fw:
+            with open(target_path, "w", encoding="utf-8", newline="") as fw:   # newline="" để không bị CRLF thành CRCRLF trên Windows
                 fw.write("\r\n".join(lines) + "\r\n")
             log_update(f"✅ Đã cập nhật xong file: {file_name}")
         except PermissionError as e:
