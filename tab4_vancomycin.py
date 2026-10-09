@@ -769,7 +769,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
     POPULATION_INFO["tucuxi.yamamoto"] = (
         "👥 Mô hình Yamamoto 2009 theo file Tucuxi: người lớn nhiễm khuẩn Gram dương (đặc biệt viêm phổi), CL tuyến tính theo "
         "CrCl khi < 85 mL/phút và hằng số khi ≥ 85. Ô 'Nhiễm Gram dương' đổi V1/V2. File .tdd không tự tính CrCl: phần "
-        "mềm cấp CrCl Cockcroft–Gault từ SCr (như Goti/Thomson). Sai số dư tỉ lệ 14,3%." + _TUCUXI_NOTE
+        "mềm cấp CrCl Cockcroft–Gault từ SCr (như Goti/Thomson). Sai số dư tỉ lệ 14,3%. Đã áp BẢN VÁ số học của Tucuxi "
+        "(lỗi BadConcentration): V2 có BSV tỉ lệ ω = 0,728 nên hậu nghiệm có thể đẩy V2 → 0; khi đó K21 bị chặn để "
+        "(Ke+K12+K21)×τ ≤ 500 và V2 = Q/K21 (V2 tối thiểu ≈ 0,12–0,7 L tuỳ τ)." + _TUCUXI_NOTE
     )
 
     def on_method_change(self, choice=None):

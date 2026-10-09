@@ -122,7 +122,8 @@ class TuModel:
 
     @property
     def eta_params(self) -> List[TuParam]:
-        return [p for p in self.params if p.bsv_type != "none" and p.sd > 0]
+        # Tucuxi xếp η theo TÊN tham số (CL, Q, V1, V2 — thứ tự chữ cái), không theo thứ tự trong file .tdd
+        return sorted((p for p in self.params if p.bsv_type != "none" and p.sd > 0), key=lambda p: p.id)
 
 
 def _txt(el, path, default=None):
@@ -330,17 +331,57 @@ class Intake:
     t: datetime.datetime
     dose_mg: float
     tinf_h: float
+    interval_h: Optional[float] = None            # τ khai báo của liều (nếu biết) — dùng cho bản vá số học V2
 
     @property
     def given_at(self) -> datetime.datetime:      # tương thích VancoDose của Tab 4
         return self.t
 
 
+EXP_GUARD = 500.0      # ngưỡng bảo vệ số học của Tucuxi (bản vá twocompartmentinfusion.cpp): Alpha × khoảng liều <= 500
+
+
+def guard_v2(pset: Dict[str, float], interval_h: float) -> Dict[str, float]:
+    """Bản vá số học BadConcentration của Tucuxi (mô hình 2 ngăn, vd Yamamoto 2009 có V2 proportional ω=0,728):
+    khi hậu nghiệm đẩy V2 → 0 thì K21 = Q/V2 khổng lồ làm exp(Alpha·t) tràn số. Nếu (Ke+K12+K21)·τ > 500 thì
+    giới hạn K21 = 500/τ − Ke − K12 (khi > 0,1) và đặt lại V2 = Q/K21. Không kích hoạt thì giữ nguyên tham số."""
+    q, v2 = pset.get("Q", 0.0), pset.get("V2", 0.0)
+    if interval_h <= 0.0 or q <= 0.0 or v2 <= 0.0:
+        return pset
+    ke, k12, k21 = pset["CL"] / pset["V1"], q / pset["V1"], q / v2
+    if (ke + k12 + k21) * interval_h > EXP_GUARD:
+        k21max = EXP_GUARD / interval_h - ke - k12
+        if k21max > 0.1:
+            out = dict(pset)
+            out["V2"] = q / k21max
+            return out
+    return pset
+
+
+def _intake_intervals(intakes: List["Intake"]) -> List[float]:
+    """Khoảng liều (h) của từng lần dùng thuốc: tới liều kế tiếp; liều cuối dùng khoảng liều trước đó (hoặc τ khai báo)."""
+    n = len(intakes)
+    out = []
+    for i, it in enumerate(intakes):
+        if getattr(it, "interval_h", None):
+            out.append(float(it.interval_h))
+        elif i + 1 < n:
+            out.append((intakes[i + 1].t - it.t).total_seconds() / 3600.0)
+        elif i > 0:
+            out.append(out[-1])
+        else:
+            out.append(12.0)
+    return out
+
+
 def simulate_central(intakes: List[Intake], psets: List[Dict[str, float]], t0: datetime.datetime,
-                     times: List[datetime.datetime]) -> List[float]:
+                     times: List[datetime.datetime], guard: bool = False) -> List[float]:
     """Nồng độ ngăn trung tâm tại các mốc `times`. psets[i] = bộ tham số hiệu lực từ intakes[i].t."""
     if not intakes:
         return [0.0] * len(times)
+    if guard:
+        ivs = _intake_intervals(intakes)
+        psets = [guard_v2(p, h) for p, h in zip(psets, ivs)]
     H = lambda t: (t - t0).total_seconds() / 3600.0
     ev = []
     for i, it in enumerate(intakes):
@@ -380,6 +421,425 @@ def simulate_central(intakes: List[Intake], psets: List[Dict[str, float]], t0: d
     return res
 
 
+
+
+# ---------------------------------------------------------------------------------------------
+# 4b. BẢN PORT TRUNG THÀNH CỦA TUCUXI: tính từng chu kỳ (số học IEEE, kể cả tràn số/NaN) + bộ tối ưu Frprmn/Dbrent
+#     Mục đích: ca nào tucucli (bản gốc) trả được kết quả thì Python cho đúng kết quả đó; chỉ ca tucucli trả
+#     BadConcentration mới dùng cận dưới V2 (bản vá số học) để vẫn có kết quả.
+# ---------------------------------------------------------------------------------------------
+import sys as _sys
+_INF = float("inf")
+_NAN = float("nan")
+DBL_MAX = _sys.float_info.max
+
+
+def _ex(x: float) -> float:
+    try:
+        return math.exp(x)
+    except OverflowError:
+        return _INF
+
+
+def _dv(a: float, b: float) -> float:
+    try:
+        return a / b
+    except ZeroDivisionError:
+        if a != a or a == 0.0:
+            return _NAN
+        return _INF if (a > 0) == (math.copysign(1.0, b) > 0) else -_INF
+
+
+def _sq(x: float) -> float:
+    return math.sqrt(x) if x >= 0.0 else _NAN
+
+
+def _pos(x: float) -> bool:          # checkPositiveValue: không Inf và >= 0 (NaN -> False)
+    return (not math.isinf(x)) and x >= 0.0
+
+
+def _spos(x: float) -> bool:         # checkStrictlyPositiveValue
+    return (not math.isinf(x)) and x > 0.0
+
+
+class _Micro:
+    """TwoCompartmentInfusionMacro: checkInputs + computeExponentials + compute, theo đúng mã nguồn gốc."""
+    __slots__ = ("D", "V1", "V2", "Ke", "K12", "K21", "SumK", "Root", "Div", "Alpha", "Beta", "Tinf", "Int", "ok")
+
+    def __init__(self, pset: Dict[str, float], dose: float, tinf: float, interval: float, guard: bool = False):
+        cl, q, v1, v2 = pset["CL"], pset["Q"], pset["V1"], pset["V2"]
+        self.D, self.V1, self.V2, self.Tinf, self.Int = dose, v1, v2, tinf, interval
+        self.ok = False
+        if not (_spos(cl) and _spos(q) and _spos(v1) and _spos(v2)):
+            return
+        ke, k12, k21 = cl / v1, q / v1, q / v2
+        if guard and interval > 0.0 and (ke + k12 + k21) * interval > EXP_GUARD:     # bản vá số học V2
+            k21max = EXP_GUARD / interval - ke - k12
+            if k21max > 0.1:
+                k21 = k21max
+                self.V2 = q / k21
+        self.Ke, self.K12, self.K21 = ke, k12, k21
+        sumk = ke + k12 + k21
+        root = _sq(sumk * sumk - 4.0 * k21 * ke)
+        self.SumK, self.Root = sumk, root
+        self.Div = root * (-sumk + root) * (sumk + root)
+        self.Alpha = (sumk + root) / 2.0
+        self.Beta = (sumk - root) / 2.0
+        self.ok = (_pos(dose) and _pos(self.Alpha) and _pos(self.Beta) and tinf >= 0.0 and interval > 0.0)
+
+    def compute(self, in1: float, in2: float, times: List[float], force: int, tmax_gt_tinf: bool):
+        """Trả (c1[], c2[]) tại `times` (giờ kể từ đầu chu kỳ), c = nồng độ (mg/L)."""
+        Ke, K12, K21, Sk, R, Dv = self.Ke, self.K12, self.K21, self.SumK, self.Root, self.Div
+        al, be, tinf = self.Alpha, self.Beta, self.Tinf
+        r1, r2 = _dv(in1, self.V1), _dv(in2, self.V2)
+        dD = _dv(_dv(self.D, self.V1), tinf)
+        eb = _ex(be * tinf)
+        residInf1 = _dv(2 * dD * eb * K21 * (_ex(-be * tinf) * (-K12 - K21 + Ke - R)
+                                             + _ex(-2 * be * tinf) * (K12 + K21 - Ke + R)
+                                             + _ex(R * tinf - al * tinf) * (K12 + K21 - Ke - R)
+                                             + _ex(-al * tinf - be * tinf) * (-K12 - K21 + Ke + R)), Dv)
+        residInf2 = _dv(2 * dD * eb * K12 * (_ex(-be * tinf) * (-Sk - R) + _ex(-2 * be * tinf) * (Sk + R)
+                                             + _ex(R * tinf - al * tinf) * (Sk - R)
+                                             + _ex(-al * tinf - be * tinf) * (-Sk + R)), Dv)
+        A = (K12 - K21 + Ke + R) * r1 - 2 * K21 * r2
+        B = (-K12 + K21 - Ke + R) * r1 + 2 * K21 * r2
+        A2 = -2 * K12 * r1 + (-K12 + K21 - Ke + R) * r2
+        BB2 = 2 * K12 * r1 + (K12 - K21 + Ke + R) * r2
+        AInf = -K12 - K21 + Ke - R
+        BInf = K12 + K21 - Ke - R
+        BPost = (-K12 + K21 - Ke + R) * residInf1 + 2 * K21 * residInf2
+        APost = (K12 - K21 + Ke + R) * residInf1 - 2 * K21 * residInf2
+        B2Post = 2 * K12 * residInf1 + (K12 - K21 + Ke + R) * residInf2
+        A2Post = -2 * K12 * residInf1 + (-K12 + K21 - Ke + R) * residInf2
+        n = len(times)
+        c1 = [0.0] * n
+        c2 = [0.0] * n
+        twoR = 2 * R
+        for i, t in enumerate(times):
+            ea, eb_, = _ex(-al * t), _ex(-be * t)
+            c1[i] = _dv(A * ea + B * eb_, twoR)
+            c2[i] = _dv(A2 * ea + BB2 * eb_, twoR)
+            if i < force:                                              # trong thời gian truyền
+                bi, bi2 = _ex(be * t), _ex(-2 * be * t)
+                ai, rt = _ex(al * t), _ex(R * t)
+                p1p1 = 2 * dD * K21 * bi
+                p1p2 = AInf * (eb_ - bi2)
+                p1p3 = BInf * (_dv(rt, ai) - _dv(ea, bi))
+                p2p1 = 2 * dD * K12 * bi
+                p2p2 = (eb_ * (-Sk - R) + bi2 * (Sk + R) + _dv(rt, ai) * (Sk - R) + _dv(ea, bi) * (-Sk + R))
+                c1[i] += _dv(p1p1 * (p1p2 + p1p3), Dv)
+                c2[i] += _dv(p2p1 * p2p2, Dv)
+            elif tmax_gt_tinf:                                         # sau truyền
+                eap, ebp = _ex(-al * (t - tinf)), _ex(-be * (t - tinf))
+                c1[i] += _dv(APost * eap + BPost * ebp, twoR)
+                c2[i] += _dv(A2Post * eap + B2Post * ebp, twoR)
+        return c1, c2
+
+    def single(self, in1: float, in2: float, at_time: float):
+        """calculateIntakeSinglePoint: trả (ok, c1 tại at_time, out1, out2) — out* là lượng thuốc (mg) cuối chu kỳ."""
+        if not self.ok:
+            return False, _NAN, _NAN, _NAN
+        tmax = not (self.Int <= self.Tinf)
+        if at_time <= self.Tinf:
+            force = 1 if tmax else 2
+        else:
+            force = 0
+        c1, c2 = self.compute(in1, in2, [at_time, self.Int], force, tmax)
+        o1, o2 = c1[1] * self.V1, c2[1] * self.V2
+        return (o1 >= 0.0 and o2 >= 0.0), c1[0], o1, o2
+
+    def cycle_ok(self, in1: float, in2: float, pts_per_hour: float = 20.0):
+        """calculateIntakePoints (chu kỳ nhiều điểm — yêu cầu predictionTraits): ok=False ⇔ tucucli trả BadConcentration."""
+        if not self.ok:
+            return False, 0.0, 0.0
+        iv, ti = self.Int, min(self.Tinf, self.Int)
+        nb = int(iv * pts_per_hour) + 1
+        if nb == 1:
+            times = [iv]
+        elif nb == 2:
+            times = [0.0, iv]
+        else:
+            nbi = min(nb, max(2, int((ti / iv) * nb)))
+            nbp = nb - nbi
+            times = [i / (nbi - 1) * ti for i in range(nbi)] + [ti + (i + 1) / nbp * (iv - ti) for i in range(nbp)]
+        if nb == 2:
+            force = min(math.ceil(self.Tinf / iv * nb), nb)
+        else:
+            force = min(nb, max(2, int((self.Tinf / iv) * nb)))
+        tmax = not (self.Int <= self.Tinf)
+        c1, c2 = self.compute(in1, in2, times, force, tmax)
+        if any(v != v for v in c1):
+            return False, 0.0, 0.0
+        o1, o2 = c1[-1] * self.V1, c2[-1] * self.V2
+        return (o1 >= 0.0 and o2 >= 0.0), o1, o2
+
+
+def tu_series_concentrations(intakes: List["Intake"], intervals: List[float], psets: List[Dict[str, float]],
+                             t0: datetime.datetime, sample_times: List[datetime.datetime],
+                             guard: bool = False) -> Optional[List[float]]:
+    """ConcentrationCalculator::computeConcentrationsAtTimes (Tucuxi). None ⇔ tucucli báo lỗi (Likelihood = DBL_MAX)."""
+    n = len(sample_times)
+    out: List[float] = []
+    if n == 0:
+        return out
+    H = lambda t: (t - t0).total_seconds() / 3600.0
+    s_h = [H(t) for t in sample_times]
+    if all(s < H(intakes[0].t) or s > H(intakes[-1].t) + intervals[-1] for s in s_h):
+        return None
+    r1 = r2 = 0.0
+    si = 0
+    nxt_s = s_h[0]
+    for i, it in enumerate(intakes):
+        if si >= n:
+            break
+        cur = H(it.t)
+        nxt_i = cur + intervals[i]
+        mic = _Micro(psets[i], it.dose_mg, it.tinf_h, intervals[i], guard)
+        if nxt_s > nxt_i:
+            ok, _, r1n, r2n = mic.single(r1, r2, 0.0)
+            if not ok:
+                return None
+            r1, r2 = r1n, r2n
+        if cur <= nxt_s <= nxt_i:
+            o1 = o2 = 0.0
+            while cur <= nxt_s <= nxt_i:
+                ok, c, o1, o2 = mic.single(r1, r2, nxt_s - cur)
+                if not ok:
+                    return None
+                out.append(c)
+                si += 1
+                if si == n:
+                    return out
+                nxt_s = s_h[si]
+            r1, r2 = o1, o2
+    return out if len(out) == n else None
+
+
+def tu_cycles_bad(intakes: List["Intake"], intervals: List[float], psets: List[Dict[str, float]],
+                  t0: datetime.datetime, guard: bool = False) -> bool:
+    """True ⇔ tucucli trả BadConcentration khi tính CHU KỲ ĐẦY ĐỦ (AUC/đáy/đỉnh/tham số) ở bất kỳ liều nào."""
+    r1 = r2 = 0.0
+    for i, it in enumerate(intakes):
+        mic = _Micro(psets[i], it.dose_mg, it.tinf_h, intervals[i], guard)
+        ok, r1n, r2n = mic.cycle_ok(r1, r2)
+        if not ok:
+            return True
+        r1, r2 = r1n, r2n
+    return False
+
+
+def apply_etas_raw(model: "TuModel", tv: Dict[str, float], etas) -> Dict[str, float]:
+    """Áp η đúng kiểu Tucuxi, KHÔNG chặn: exponential P·e^η, proportional P·(1+η) (có thể ≤ 0 -> BadParameters)."""
+    out = dict(tv)
+    for e, p in zip(etas, model.eta_params):
+        out[p.id] = tv[p.id] * _ex(e) if p.bsv_type == "exponential" else tv[p.id] * (1.0 + e)
+    return out
+
+
+# --- Bộ tối ưu: Frprmn + Dbrent + đạo hàm sai phân trung tâm (minimize.h / deriv.h / likelihood.h) -------------------
+def _copysign(a, b):
+    return math.copysign(a, b)
+
+
+class _Df1dim:
+    def __init__(self, p, xi, func):
+        self.p, self.xi, self.n, self.func = p, xi, len(p), func
+        self.xt = [0.0] * self.n
+
+    def __call__(self, x):
+        self.xt = [self.p[j] + x * self.xi[j] for j in range(self.n)]
+        return self.func(self.xt)
+
+    def df(self, x):                       # dùng xt của lần gọi hàm gần nhất (đúng như Tucuxi)
+        d = self.func.df(self.xt)
+        return sum(d[j] * self.xi[j] for j in range(self.n))
+
+
+def _bracket(a, b, f):
+    GOLD, GLIMIT, TINY = 1.618034, 100.0, 1.0e-20
+    ax, bx = a, b
+    fa, fb = f(ax), f(bx)
+    if fb > fa:
+        ax, bx = bx, ax
+        fb, fa = fa, fb
+    cx = bx + GOLD * (bx - ax)
+    fc = f(cx)
+    while fb > fc:
+        r = (bx - ax) * (fb - fc)
+        q = (bx - cx) * (fb - fa)
+        u = bx - ((bx - cx) * q - (bx - ax) * r) / (2.0 * _copysign(max(abs(q - r), TINY), q - r))
+        ulim = bx + GLIMIT * (cx - bx)
+        if (bx - u) * (u - cx) > 0.0:
+            fu = f(u)
+            if fu < fc:
+                return bx, u, cx, fb, fu, fc
+            if fu > fb:
+                return ax, bx, u, fa, fb, fu
+            u = cx + GOLD * (cx - bx)
+            fu = f(u)
+        elif (cx - u) * (u - ulim) > 0.0:
+            fu = f(u)
+            if fu < fc:
+                bx, cx, u = cx, u, u + GOLD * (u - cx)
+                fb, fc, fu = fc, fu, f(u)
+        elif (u - ulim) * (ulim - cx) >= 0.0:
+            u = ulim
+            fu = f(u)
+        else:
+            u = cx + GOLD * (cx - bx)
+            fu = f(u)
+        ax, bx, cx, fa, fb, fc = bx, cx, u, fb, fc, fu
+    return ax, bx, cx, fa, fb, fc
+
+
+def _dbrent(f, ax, bx, cx, tol=3.0e-8):
+    ITMAX = 100
+    ZEPS = 2.220446049250313e-16 * 1.0e-3
+    d = e = 0.0
+    a = ax if ax < cx else cx
+    b = ax if ax > cx else cx
+    x = w = v = bx
+    fw = fv = fx = f(x)
+    dw = dv = dx = f.df(x)
+    for _ in range(ITMAX):
+        xm = 0.5 * (a + b)
+        tol1 = tol * abs(x) + ZEPS
+        tol2 = 2.0 * tol1
+        if abs(x - xm) <= (tol2 - 0.5 * (b - a)):
+            return x, fx
+        if abs(e) > tol1:
+            d1 = 2.0 * (b - a)
+            d2 = d1
+            if dw != dx:
+                d1 = (w - x) * dx / (dx - dw)
+            if dv != dx:
+                d2 = (v - x) * dx / (dx - dv)
+            u1, u2 = x + d1, x + d2
+            ok1 = (a - u1) * (u1 - b) > 0.0 and dx * d1 <= 0.0
+            ok2 = (a - u2) * (u2 - b) > 0.0 and dx * d2 <= 0.0
+            olde = e
+            e = d
+            if ok1 or ok2:
+                if ok1 and ok2:
+                    d = d1 if abs(d1) < abs(d2) else d2
+                elif ok1:
+                    d = d1
+                else:
+                    d = d2
+                if abs(d) <= abs(0.5 * olde):
+                    u = x + d
+                    if u - a < tol2 or b - u < tol2:
+                        d = _copysign(tol1, xm - x)
+                else:
+                    e = (a - x) if dx >= 0.0 else (b - x)
+                    d = 0.5 * e
+            else:
+                e = (a - x) if dx >= 0.0 else (b - x)
+                d = 0.5 * e
+        else:
+            e = (a - x) if dx >= 0.0 else (b - x)
+            d = 0.5 * e
+        if abs(d) >= tol1:
+            u = x + d
+            fu = f(u)
+        else:
+            u = x + _copysign(tol1, d)
+            fu = f(u)
+            if fu > fx:
+                return x, fx
+        du = f.df(u)
+        if fu <= fx:
+            if u >= x:
+                a = x
+            else:
+                b = x
+            v, fv, dv = w, fw, dw
+            w, fw, dw = x, fx, dx
+            x, fx, dx = u, fu, du
+        else:
+            if u < x:
+                a = u
+            else:
+                b = u
+            if fu <= fw or w == x:
+                v, fv, dv = w, fw, dw
+                w, fw, dw = u, fu, du
+            elif fu < fv or v == x or v == w:
+                v, fv, dv = u, fu, du
+    return x, fx
+
+
+class _Likelihood:
+    """Hàm mục tiêu + đạo hàm có chặn [omin, omax] như Likelihood của Tucuxi."""
+    def __init__(self, fn, sd):
+        self.fn = fn
+        z = 3.0902323061678132            # √2·erfinv(0.998)
+        self.omax = [x * z for x in sd]
+        self.omin = [-x * z for x in sd]
+
+    def __call__(self, x):
+        return self.fn(x)
+
+    def df(self, x):
+        tol = 2e-5
+        out = []
+        for i in range(len(x)):
+            xp, xm = list(x), list(x)
+            xp[i] = x[i] + tol
+            xm[i] = x[i] - tol
+            try:
+                d = (self(xp) - self(xm)) / (2 * tol)
+            except Exception:
+                d = _NAN
+            out.append(max(self.omin[i], min(d, self.omax[i])))
+        return out
+
+
+def tu_frprmn(fn, sd, x0):
+    """Frprmn::minimize (Polak–Ribière), ftol = 3e-8, GTOL = 1e-8, ITMAX = 200 — sao chép đúng minimize.h."""
+    L = _Likelihood(fn, sd)
+    ITMAX, EPS, GTOL, ftol = 200, 1.0e-18, 1.0e-8, 3.0e-8
+    p = list(x0)
+    n = len(p)
+    fp = L(p)
+    xi = L.df(p)
+    g = [-v for v in xi]
+    h = list(g)
+    xi = list(g)
+    equal = False
+    for _ in range(ITMAX):
+        # linmin
+        df1 = _Df1dim(p, xi, L)
+        ax, bx, cx, fa, fb, fc = _bracket(0.0, 1.0, df1)
+        xmin, fmin = _dbrent(df1, ax, bx, cx)
+        xi = [v * xmin for v in xi]
+        p = [p[j] + xi[j] for j in range(n)]
+        fret = fmin
+        if equal and 2.0 * abs(fret - fp) <= ftol * (abs(fret) + abs(fp) + EPS):
+            return p
+        equal = (fret == fp)
+        fp = fret
+        xi = L.df(p)
+        test, den = 0.0, max(fp, 1.0)
+        for j in range(n):
+            temp = abs(xi[j]) * max(abs(p[j]), 1.0) / den
+            if temp > test:
+                test = temp
+        if test < GTOL:
+            return p
+        gg = dgg = 0.0
+        for j in range(n):
+            gg += g[j] * g[j]
+            dgg += (xi[j] + g[j]) * xi[j]
+        if gg == 0.0:
+            return p
+        gam = dgg / gg
+        for j in range(n):
+            g[j] = -xi[j]
+            xi[j] = h[j] = g[j] + gam * h[j]
+    return p
+
+
 # ---------------------------------------------------------------------------------------------
 # 5. Bộ ước lượng
 # ---------------------------------------------------------------------------------------------
@@ -415,6 +875,8 @@ class TuFit:
     Vp_prior: float = 0.0
     points: List[dict] = field(default_factory=list)
     anchor_dose: Optional[object] = None
+    guard: bool = False                 # True ⇒ ca bị BadConcentration của tucucli → đã dùng cận dưới V2 (bản vá số học)
+    bad_concentration: bool = False
     t_ref: Optional[datetime.datetime] = None
     cl_segments: List[Tuple[datetime.datetime, float]] = field(default_factory=list)
 
@@ -440,7 +902,7 @@ class TuFit:
                 kind: str = "post") -> List[float]:
         intakes = sorted(self.intakes + (extra_doses or []), key=lambda i: i.t)
         etas = self.etas if kind == "post" else np.zeros_like(self.etas)
-        return simulate_central(intakes, self._psets_for(intakes, etas), self.t0, times)
+        return simulate_central(intakes, self._psets_for(intakes, etas), self.t0, times, guard=self.guard)
 
 
 def population_params(model_key: str, patient: TuPatient, scr_umol: List[Tuple[datetime.datetime, float]],
@@ -472,7 +934,7 @@ def tucuxi_fit(model_key: str, patient: TuPatient, doses: List[Tuple[datetime.da
                drug_dir: Optional[str] = None, anchor_time: Optional[datetime.datetime] = None) -> TuFit:
     """doses: [(thời điểm, mg, thời gian truyền h)]; scr_umol: [(thời điểm, µmol/L)]; samples: [(thời điểm, mg/L)]."""
     model = load_model(model_key, drug_dir)
-    intakes = sorted((Intake(t, mg, tinf) for t, mg, tinf in doses), key=lambda i: i.t)
+    intakes = sorted((Intake(d[0], d[1], d[2], (d[3] if len(d) > 3 else None)) for d in doses), key=lambda i: i.t)   # d = (t, mg, tinf[, τ_h])
     scr = sorted(scr_umol, key=lambda x: x[0])
     samples = sorted(samples, key=lambda x: x[0])
     if not intakes:
@@ -494,29 +956,50 @@ def tucuxi_fit(model_key: str, patient: TuPatient, doses: List[Tuple[datetime.da
     def psets_eta(etas):
         return [apply_etas(model, tvp, etas) for tvp in tv_psets]
 
-    def J(etas):
-        f = simulate_central(intakes, psets_eta(etas), t0, stimes)
-        j = om_add + 0.5 * float(np.sum((etas / sd) ** 2))
-        for fi, yi in zip(f, yobs):
-            sig = _residual_sigma(model, fi)
-            if sig <= 0:
-                return 1e12
-            j += 0.5 * math.log(2 * math.pi) + math.log(sig) + 0.5 * ((yi - fi) / sig) ** 2
-        return j
+    ivs = _intake_intervals(intakes)
+    sd_list = [float(x) for x in sd]
+    om_half_add = om_add
+
+    def make_J(guard: bool):
+        def Jf(e):
+            ps = [apply_etas_raw(model, tvp, e) for tvp in tv_psets]
+            f = tu_series_concentrations(intakes, ivs, ps, t0, stimes, guard)
+            if f is None:
+                return DBL_MAX
+            j = om_half_add + 0.5 * sum((ei / si) ** 2 for ei, si in zip(e, sd_list))
+            for fi, yi in zip(f, yobs):
+                sig = _residual_sigma(model, fi)
+                if not (sig > 0.0):
+                    return DBL_MAX
+                j += 0.5 * math.log(2 * math.pi) + math.log(sig) + 0.5 * ((yi - fi) / sig) ** 2
+            return DBL_MAX if j != j else j
+        return Jf
 
     etas = np.zeros(len(sd))
+    guard_used = False
+    bad = False
     if samples:
-        r = minimize(J, etas, method="BFGS", options={"gtol": 1e-8, "maxiter": 400})
-        r2 = minimize(J, r.x, method="Nelder-Mead", options={"xatol": 1e-7, "fatol": 1e-10, "maxiter": 2000})
-        best = r2 if r2.fun <= r.fun else r
-        etas, nll = best.x, float(best.fun)
-        fit.message = "Tối ưu Bayes MAP (Tucuxi) hội tụ"
+        Jf = make_J(False)
+        etas = np.array(tu_frprmn(Jf, sd_list, [0.0] * len(sd)))
+        nll = float(Jf(list(etas)))
+        ps_post = [apply_etas_raw(model, tvp, etas) for tvp in tv_psets]
+        bad = tu_cycles_bad(intakes, ivs, ps_post, t0, False)
+        fit.message = "Tối ưu Bayes MAP (Tucuxi: Frprmn) hội tụ"
+        if bad:     # tucucli gốc sẽ trả BadConcentration → dùng cận dưới V2 (bản vá số học) như bản tucucli đã vá
+            Jg = make_J(True)
+            etas = np.array(tu_frprmn(Jg, sd_list, [0.0] * len(sd)))
+            nll = float(Jg(list(etas)))
+            guard_used = True
+            fit.message = "Tối ưu Bayes MAP (Tucuxi) — ca BadConcentration: đã áp cận dưới V2 (bản vá số học)"
     else:
-        nll = J(etas)
+        nll = make_J(False)(list(etas))
         fit.message = "Không có nồng độ đo — chỉ tiền nghiệm (η = 0)"
+    fit.guard, fit.bad_concentration = guard_used, bad
     fit.etas, fit.nll = etas, nll
-    fit.c_post = simulate_central(intakes, psets_eta(etas), t0, stimes)
-    fit.c_prior = simulate_central(intakes, tv_psets, t0, stimes)
+    _cp = tu_series_concentrations(intakes, ivs, [apply_etas_raw(model, tvp, etas) for tvp in tv_psets], t0, stimes, guard_used)
+    fit.c_post = _cp if _cp is not None else simulate_central(intakes, psets_eta(etas), t0, stimes, guard=guard_used)
+    _cr = tu_series_concentrations(intakes, ivs, tv_psets, t0, stimes, guard_used)
+    fit.c_prior = _cr if _cr is not None else simulate_central(intakes, tv_psets, t0, stimes, guard=guard_used)
 
     # Thông số cuối + đoạn CL bậc thang. Bộ tham số "hiện tại" tính tại mốc muộn nhất (liều/SCr/mẫu cuối),
     # để AUC và dự đoán liều mới dùng đúng SCr mới nhất (kể cả SCr đo SAU liều cuối).
@@ -525,6 +1008,8 @@ def tucuxi_fit(model_key: str, patient: TuPatient, doses: List[Tuple[datetime.da
     cov_now = covariates_at(model, patient, birth, scr, t_ref)
     tv_now = param_set(model, cov_now)
     last = apply_etas(model, tv_now, etas)
+    if guard_used:
+        last = guard_v2(last, ivs[-1])
     tvl = tv_now
     fit.t_ref = t_ref
     fit.CL_optimized, fit.Vc_optimized, fit.Vp_optimized, fit.Q_value = last["CL"], last["V1"], last["V2"], last["Q"]
