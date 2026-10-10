@@ -32,6 +32,26 @@
                     <comment lang='en'>Added DOI reference. Harmonized covariate settings.</comment>
                 </comments>
             </revision>
+            <revision>
+                <revisionAction>modification</revisionAction>
+                <revisionAuthorName>Paul Thoueille</revisionAuthorName>
+                <institution>Service de Pharmacologie clinique, CHUV, Lausanne (Switzerland)</institution>
+                <email>paul.thoueille@chuv.ch</email>
+                <date>2026-10-07</date>
+                <comments>
+                    <comment lang='en'>BSV stdDevs corrected: previous values were omega2 (variances) entered as SD. Table 3 reports CV% 27.9 (CL), 27.3 (V1), 97.9 (V2) with CV = sqrt(exp(omega2)-1), hence omega = 0.274, 0.268, 0.820.</comment>
+                </comments>
+            </revision>
+            <revision>
+                <revisionAction>modification</revisionAction>
+                <revisionAuthorName>Yann Thoma</revisionAuthorName>
+                <institution>HEIG-VD</institution>
+                <email>yann.thoma@heig-vd.ch</email>
+                <date>2026-10-09</date>
+                <comments>
+                    <comment lang='en'>Updated the model that now runs with correct computation of CL from V1 and Q from V2.</comment>
+                </comments>
+            </revision>
         </revisions>
     </history>
     <head>
@@ -51,8 +71,13 @@
                 <desc lang='fr'>La vancomycine est un antibiotique glycopeptidique utilisé pour traiter certaines infections bactériennes. Elle est administrée par voie intraveineuse (injection dans une veine) pour traiter les infections cutanées compliquées, les infections sanguines, l’endocardite, les infections osseuses et articulaires, ainsi que la méningite causées par Staphylococcus aureus résistant à la méthicilline.</desc>
             </drugDescription>
             <tdmStrategy>
-                <text lang='en'>AUC24/MIC. To be completed.</text>
-                <text lang='fr'>AUC24/MIC. À compléter.</text>
+                <text lang='en'>The efficacy of vancomycin is best predicted by the AUC of circulating concentrations over MIC of the target bacteria. The MIC of most sensitive bacterias is below 1 mg/L, a value usually considered when the actual MIC of the bacterial strain infecting the patient has not been determined. The most usual recommendation regarding AUC/MIC value in the literature is to keep it above 400 h over a one-day interval. This can equivalently be expressed in terms of average concentration with a corresponding minimum target of 17 times the MIC, or 17 mg/L assuming a MIC of 1 mg/L. We use practically a target of 500 h, with an acceptance interval of 400 to 700 h. Accordingly, the concentration target that we recommend for a continuous infusion is 15-25 mg/L.
+                                                                                                                                                Another traditional method of dosage optimization often proposed for vancomycin given as intermittent infusion is to target a trough concentration of 10-15 mg/L. Yet a higher target of 15-20 mg/L is recommended for MRSA and other severe infections with Enterococcus of high resistance potential.</text>
+                <text lang='fr'>L’efficacité de la vancomycine est mieux prédite par l’AUC des concentrations circulantes sur la CMI (concentration minimale inhibitrice) de la bactérie cible. La CMI des bactéries les plus sensibles est généralement inférieure à 1 mg/L, une valeur souvent utilisée lorsque la CMI réelle de la souche bactérienne infectant le patient n’a pas été déterminée.
+                    
+                    La recommandation la plus courante dans la littérature concernant la valeur AUC/CMI est de la maintenir au-dessus de 400 h sur un intervalle d’une journée. Cela peut être exprimé de manière équivalente en termes de concentration moyenne, avec un objectif minimum correspondant de 17 fois la CMI, soit 17 mg/L en supposant une CMI de 1 mg/L. Nous utilisons pratiquement un objectif de 500 h, avec une plage d’acceptation de 400 à 700 h. En conséquence, la concentration cible que nous recommandons pour une perfusion continue est de 15 à 25 mg/L.
+                    
+                Une autre méthode traditionnelle d’optimisation de la posologie, souvent proposée pour la vancomycine administrée par perfusions intermittentes, consiste à cibler une concentration résiduelle (trough) de 10 à 15 mg/L. Toutefois, un objectif plus élevé de 15 à 20 mg/L est recommandé pour les infections graves à MRSA et pour d’autres infections à Enterococcus présentant un potentiel élevé de résistance.</text>
             </tdmStrategy>
         </drug>
         <study>
@@ -66,22 +91,22 @@
             <references>
                 <reference type='bibtex'>
                     <![CDATA[@article{colin_vancomycin_2019,
-                                                                                                    	title = {Vancomycin {Pharmacokinetics} {Throughout} {Life}: {Results} from a {Pooled} {Population} {Analysis} and {Evaluation} of {Current} {Dosing} {Recommendations}},
-                                                                                                    	issn = {1179-1926},
-                                                                                                    	shorttitle = {Vancomycin {Pharmacokinetics} {Throughout} {Life}},
-                                                                                                    	doi = {10.1007/s40262-018-0727-5},
-                                                                                                    	abstract = {BACKGROUND AND OBJECTIVES: Uncertainty exists regarding the optimal dosing regimen for vancomycin in different patient populations, leading to a plethora of subgroup-specific pharmacokinetic models and derived dosing regimens. We aimed to investigate whether a single model for vancomycin could be developed based on a broad dataset covering the extremes of patient characteristics. Furthermore, as a benchmark for current dosing recommendations, we evaluated and optimised the expected vancomycin exposure throughout life and for specific patient subgroups.
-                                                                                                    METHODS: A pooled population-pharmacokinetic model was built in NONMEM based on data from 14 different studies in different patient populations. Steady-state exposure was simulated and compared across patient subgroups for two US Food and Drug Administration/European Medicines Agency-approved drug labels and optimised doses were derived.
-                                                                                                    RESULTS: The final model uses postmenstrual age, weight and serum creatinine as covariates. A 35-year-old, 70-kg patient with a serum creatinine level of 0.83 mg dL-1 (73.4 µmol L-1) has a V1, V2, CL and Q2 of 42.9 L, 41.7 L, 4.10 L h-1 and 3.22 L h-1. Clearance matures with age, reaching 50\% of the maximal value (5.31 L h-1 70 kg-1) at 46.4 weeks postmenstrual age then declines with age to 50\% at 61.6 years. Current dosing guidelines failed to achieve satisfactory steady-state exposure across patient subgroups. After optimisation, increased doses for the Food and Drug Administration label achieve consistent target attainment with minimal (± 20\%) risk of under- and over-dosing across patient subgroups.
-                                                                                                    CONCLUSIONS: A population model was developed that is useful for further development of age and kidney function-stratified dosing regimens of vancomycin and for individualisation of treatment through therapeutic drug monitoring and Bayesian forecasting.},
-                                                                                                    	language = {eng},
-                                                                                                    	journal = {Clinical Pharmacokinetics},
-                                                                                                    	author = {Colin, Pieter J. and Allegaert, Karel and Thomson, Alison H. and Touw, Daan J. and Dolton, Michael and de Hoog, Matthijs and Roberts, Jason A. and Adane, Eyob D. and Yamamoto, Masato and Santos-Buelga, Dolores and Martín-Suarez, Ana and Simon, Nicolas and Taccone, Fabio S. and Lo, Yoke-Lin and Barcia, Emilia and Struys, Michel M. R. F. and Eleveld, Douglas J.},
-                                                                                                    	month = jan,
-                                                                                                    	year = {2019},
-                                                                                                    	pmid = {30656565},
-                                                                                                    	file = {Full Text:C\:\\Users\\Philip\\Zotero\\storage\\NJ225ZWX\\Colin et al. - 2019 - Vancomycin Pharmacokinetics Throughout Life Resul.pdf:application/pdf}
-                                                                                                    }]]>
+                                                                                                                        	title = {Vancomycin {Pharmacokinetics} {Throughout} {Life}: {Results} from a {Pooled} {Population} {Analysis} and {Evaluation} of {Current} {Dosing} {Recommendations}},
+                                                                                                                        	issn = {1179-1926},
+                                                                                                                        	shorttitle = {Vancomycin {Pharmacokinetics} {Throughout} {Life}},
+                                                                                                                        	doi = {10.1007/s40262-018-0727-5},
+                                                                                                                        	abstract = {BACKGROUND AND OBJECTIVES: Uncertainty exists regarding the optimal dosing regimen for vancomycin in different patient populations, leading to a plethora of subgroup-specific pharmacokinetic models and derived dosing regimens. We aimed to investigate whether a single model for vancomycin could be developed based on a broad dataset covering the extremes of patient characteristics. Furthermore, as a benchmark for current dosing recommendations, we evaluated and optimised the expected vancomycin exposure throughout life and for specific patient subgroups.
+                                                                                                                        METHODS: A pooled population-pharmacokinetic model was built in NONMEM based on data from 14 different studies in different patient populations. Steady-state exposure was simulated and compared across patient subgroups for two US Food and Drug Administration/European Medicines Agency-approved drug labels and optimised doses were derived.
+                                                                                                                        RESULTS: The final model uses postmenstrual age, weight and serum creatinine as covariates. A 35-year-old, 70-kg patient with a serum creatinine level of 0.83 mg dL-1 (73.4 µmol L-1) has a V1, V2, CL and Q2 of 42.9 L, 41.7 L, 4.10 L h-1 and 3.22 L h-1. Clearance matures with age, reaching 50\% of the maximal value (5.31 L h-1 70 kg-1) at 46.4 weeks postmenstrual age then declines with age to 50\% at 61.6 years. Current dosing guidelines failed to achieve satisfactory steady-state exposure across patient subgroups. After optimisation, increased doses for the Food and Drug Administration label achieve consistent target attainment with minimal (± 20\%) risk of under- and over-dosing across patient subgroups.
+                                                                                                                        CONCLUSIONS: A population model was developed that is useful for further development of age and kidney function-stratified dosing regimens of vancomycin and for individualisation of treatment through therapeutic drug monitoring and Bayesian forecasting.},
+                                                                                                                        	language = {eng},
+                                                                                                                        	journal = {Clinical Pharmacokinetics},
+                                                                                                                        	author = {Colin, Pieter J. and Allegaert, Karel and Thomson, Alison H. and Touw, Daan J. and Dolton, Michael and de Hoog, Matthijs and Roberts, Jason A. and Adane, Eyob D. and Yamamoto, Masato and Santos-Buelga, Dolores and Martín-Suarez, Ana and Simon, Nicolas and Taccone, Fabio S. and Lo, Yoke-Lin and Barcia, Emilia and Struys, Michel M. R. F. and Eleveld, Douglas J.},
+                                                                                                                        	month = jan,
+                                                                                                                        	year = {2019},
+                                                                                                                        	pmid = {30656565},
+                                                                                                                        	file = {Full Text:C\:\\Users\\Philip\\Zotero\\storage\\NJ225ZWX\\Colin et al. - 2019 - Vancomycin Pharmacokinetics Throughout Life Resul.pdf:application/pdf}
+                                                                                                                        }]]>
                 </reference>
                 <reference type='doi'>
                     <![CDATA[https://doi.org/10.1007/s40262-018-0727-5]]>
@@ -610,7 +635,7 @@
                         <targetValues>
                             <unit>h</unit>
                             <min>
-                                <standardValue>300</standardValue>
+                                <standardValue>400</standardValue>
                             </min>
                             <max>
                                 <standardValue>700</standardValue>
@@ -622,7 +647,7 @@
                                 <standardValue>1000</standardValue>
                             </toxicityAlarm>
                             <inefficacyAlarm>
-                                <standardValue>300</standardValue>
+                                <standardValue>260</standardValue>
                             </inefficacyAlarm>
                             <mic>
                                 <unit>mg/l</unit>
@@ -631,9 +656,7 @@
                                 </micValue>
                             </mic>
                         </targetValues>
-                        <comments>
-                            <comment lang='en'>Targets suggested by Philip Drennan -- 500 is the middle of the target range 400 - 600 and is an arbitrary choice</comment>
-                        </comments>
+                        <comments/>
                     </target>
                 </targets>
             </activeMoiety>
@@ -641,7 +664,7 @@
         <analyteGroups>
             <analyteGroup>
                 <groupId>vancomycin</groupId>
-                <pkModelId>linear.2comp.macro</pkModelId>
+                <pkModelId>linear.2comp.macro.colin2019</pkModelId>
                 <analytes>
                     <analyte>
                         <analyteId>vancomycin</analyteId>
@@ -711,7 +734,6 @@
                                             
                                             
                                             F_size = bodyweight / 70.0;
-                                            v1 = theta_v1 * F_size;
                                             creatinine = creatinine/88.4;
                                             
                                             PMA_wk = gestationalage + postnatalage / 7.0;
@@ -721,7 +743,7 @@
                                             F_mat = Math.pow(PMA_wk, gamma1)/(Math.pow(PMA_wk, gamma1) + Math.pow(PMA50, gamma1));
                                             F_decline = Math.pow(PMA_yr, -gamma2)/(Math.pow(PMA_yr,-gamma2) + Math.pow(AGE50,-gamma2));
                                             
-                                            newCL = theta_CL * Math.pow(v1/theta_v1, 0.75) * F_mat * F_decline * F_scr * (1 + theta_stdy10 * dis_haem);
+                                            newCL = theta_CL * F_mat * F_decline * F_scr * (1 + theta_stdy10 * dis_haem);
                                             
                                             return newCL;
                                             ]]>
@@ -729,16 +751,16 @@
                                     </softFormula>
                                     <comments>
                                         <comment lang='en'>F decline formula is wrong in the paper. should be F_decline = Math.pow(PMA_yr, -gamma2) / (Math.pow(PMA_yr, -gamma2) + Math.pow(AGE50, -gamma2));
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            (sub PMA_yr = 61.6 into the formula - should be 0.5 by definition).
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        (sub PMA_yr = 61.6 into the formula - should be 0.5 by definition).
                                             
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                        Also I don&apos;t understand the theta_stdy13_v1 parameter (and the other ones like it). It looks like there should be an indicator function here, which =1 if heelprick sampling is used and 0 if it is not. But they haven&apos;t written it like this. Heel prick sampling is not done in practice, so we can ignre this, but I think we need to have &apos;haematology patient&apos; as a boolean/logical variable. I have coded it double (like sex has been coded).</comment>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                Also I don&apos;t understand the theta_stdy13_v1 parameter (and the other ones like it). It looks like there should be an indicator function here, which =1 if heelprick sampling is used and 0 if it is not. But they haven&apos;t written it like this. Heel prick sampling is not done in practice, so we can ignre this, but I think we need to have &apos;haematology patient&apos; as a boolean/logical variable. I have coded it double (like sex has been coded).</comment>
                                     </comments>
                                 </aprioriComputation>
                             </parameterValue>
                             <bsv>
                                 <bsvType>lognormal</bsvType>
                                 <stdDevs>
-                                    <stdDev>0.07495997</stdDev>
+                                    <stdDev>0.274</stdDev>
                                 </stdDevs>
                             </bsv>
                             <comments>
@@ -761,7 +783,6 @@
                                         <code>
                                             <![CDATA[
                                             theta_v1 = 42.9;
-                                            
                                             F_size = bodyweight / 70.0;
                                             newV1 = theta_v1 * F_size;
                                             return newV1;
@@ -774,7 +795,7 @@
                             <bsv>
                                 <bsvType>lognormal</bsvType>
                                 <stdDevs>
-                                    <stdDev>0.07188243</stdDev>
+                                    <stdDev>0.268</stdDev>
                                 </stdDevs>
                             </bsv>
                             <comments>
@@ -797,9 +818,8 @@
                                         <code>
                                             <![CDATA[
                                             theta_v2 = 41.7;
-                                            
-                                                                                                        TVV2 = theta_v2 * bodyweight / 70.0;
-                                                                                                        return TVV2;
+                                            TVV2 = theta_v2 * bodyweight / 70.0;
+                                            return TVV2;
                                             ]]>
                                         </code>
                                     </softFormula>
@@ -809,7 +829,7 @@
                             <bsv>
                                 <bsvType>lognormal</bsvType>
                                 <stdDevs>
-                                    <stdDev>0.6721487</stdDev>
+                                    <stdDev>0.82</stdDev>
                                 </stdDevs>
                             </bsv>
                             <comments>
@@ -824,19 +844,11 @@
                                 <aprioriComputation>
                                     <softFormula>
                                         <inputs>
-                                            <input>
-                                                <id>bodyweight</id>
-                                                <type>double</type>
-                                            </input>
                                         </inputs>
                                         <code>
                                             <![CDATA[
-                                            theta_v2 = 41.7;
-                                            TVV2 = theta_v2 * bodyweight / 70.0;
                                             theta_q2 = 3.22;
-                                            TQ = theta_q2 * Math.pow(TVV2/theta_v2, 0.75);
-                                            
-                                            return TQ;
+                                            return theta_q2;
                                             ]]>
                                         </code>
                                     </softFormula>
@@ -900,7 +912,7 @@
                                 <standardValue>250</standardValue>
                             </from>
                             <to>
-                                <standardValue>6000</standardValue>
+                                <standardValue>1500</standardValue>
                             </to>
                             <step>
                                 <standardValue>250</standardValue>
@@ -914,17 +926,20 @@
                             <standardValue>12</standardValue>
                         </default>
                         <fixedValues>
+                            <value>6</value>
+                            <value>8</value>
                             <value>12</value>
+                            <value>24</value>
                         </fixedValues>
                     </availableIntervals>
                     <availableInfusions>
                         <unit>min</unit>
                         <default>
-                            <standardValue>120</standardValue>
+                            <standardValue>60</standardValue>
                         </default>
                         <fixedValues>
+                            <value>60</value>
                             <value>120</value>
-                            <value>240</value>
                         </fixedValues>
                     </availableInfusions>
                     <comments/>

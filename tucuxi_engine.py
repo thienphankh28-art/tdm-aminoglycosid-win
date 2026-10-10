@@ -119,6 +119,7 @@ class TuModel:
     covs: Dict[str, TuCov]
     err_type: str
     sigmas: List[float]
+    pk_model_id: str = ""
 
     @property
     def eta_params(self) -> List[TuParam]:
@@ -175,7 +176,8 @@ def parse_tdd(path: str, key: str = "") -> TuModel:
     err_type = _txt(em, "errorModelType", "proportional")
     sig = [float(s.text) for s in em.findall("sigmas/sigma/standardValue")]
     name = os.path.basename(path)
-    return TuModel(key, name, name, params, covs, err_type, sig)
+    pk_id = _txt(root, ".//analyteGroup/pkModelId", "") or ""
+    return TuModel(key, name, name, params, covs, err_type, sig, pk_id)
 
 
 _CACHE: Dict[Tuple[str, str], TuModel] = {}
@@ -234,11 +236,14 @@ def cockcroft_gault_general(weight, age_int, creat_umol, male) -> Optional[float
 
 
 def covariates_at(model: TuModel, pat: TuPatient, birth: datetime.datetime,
-                  scr_series: List[Tuple[datetime.datetime, float]], t: datetime.datetime) -> Dict[str, float]:
-    """Giá trị hiệp biến tại 1 mốc lưới (đúng thứ tự: chuẩn/tuổi → tính toán)."""
+                  scr_series: List[Tuple[datetime.datetime, float]], t: datetime.datetime,
+                  t_age: Optional[datetime.datetime] = None) -> Dict[str, float]:
+    """Giá trị hiệp biến: chuẩn/SCr nội suy tại t (mốc lấy giá trị); tuổi tính tại t_age (mốc làm mới, mặc định = t)."""
     v: Dict[str, float] = {}
+    if t_age is None:
+        t_age = t
     creat_now = _interp(scr_series, t) if scr_series else None
-    age_now = _years_between(t, birth)
+    age_now = _years_between(t_age, birth)
     patient_std = {
         "bodyweight": pat.weight_kg, "sex": 1.0 if pat.male else 0.0,
         "gestationalage": pat.gestational_age_w, "hemodialysis": 1.0 if pat.hemodialysis else 0.0,
@@ -246,11 +251,11 @@ def covariates_at(model: TuModel, pat: TuPatient, birth: datetime.datetime,
     }
     for cid, c in model.covs.items():
         if c.ctype == "ageInYears":
-            v[cid] = float(_years_between(t, birth))
+            v[cid] = float(_years_between(t_age, birth))
         elif c.ctype == "ageInDays":
-            v[cid] = float((t - birth).days)
+            v[cid] = float((t_age - birth).days)
         elif c.ctype == "ageInWeeks":
-            v[cid] = float((t - birth).days // 7)
+            v[cid] = float((t_age - birth).days // 7)
         elif cid == "creatinine":
             v[cid] = _interp(scr_series, t) if scr_series else c.default
         elif cid in patient_std:
@@ -284,6 +289,20 @@ def param_set(model: TuModel, cov: Dict[str, float]) -> Dict[str, float]:
     return out
 
 
+COLIN_PK_ID = "linear.2comp.macro.colin2019"
+
+
+def finalize_params(model: "TuModel", p: Dict[str, float]) -> Dict[str, float]:
+    """Bước cuối của tucuxi-core (ParameterSetSeries::getAtTime, commit 0b495f1) CHỈ cho pkModelId
+    'linear.2comp.macro.colin2019': CL và Q được nhân theo V1, V2 CÁ THỂ (đã có η):
+        CL = CL·(V1/42.9)^0.75 ;  Q = Q·(V2/41.7)^0.75."""
+    if getattr(model, "pk_model_id", "") == COLIN_PK_ID:
+        p = dict(p)
+        p["CL"] = p["CL"] * (p["V1"] / 42.9) ** 0.75
+        p["Q"] = p["Q"] * (p["V2"] / 41.7) ** 0.75
+    return p
+
+
 def apply_etas(model: TuModel, tv: Dict[str, float], etas: np.ndarray) -> Dict[str, float]:
     out = dict(tv)
     for e, p in zip(etas, model.eta_params):
@@ -292,7 +311,7 @@ def apply_etas(model: TuModel, tv: Dict[str, float], etas: np.ndarray) -> Dict[s
             out[p.id] = tv[p.id] * math.exp(max(min(e, 20.0), -20.0))
         else:
             out[p.id] = tv[p.id] * max(1.0 + e, 1e-4)      # tham số luôn dương
-    return out
+    return finalize_params(model, out)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -633,7 +652,7 @@ def apply_etas_raw(model: "TuModel", tv: Dict[str, float], etas) -> Dict[str, fl
     out = dict(tv)
     for e, p in zip(etas, model.eta_params):
         out[p.id] = tv[p.id] * _ex(e) if p.bsv_type == "exponential" else tv[p.id] * (1.0 + e)
-    return out
+    return finalize_params(model, out)
 
 
 # --- Bộ tối ưu: Frprmn + Dbrent + đạo hàm sai phân trung tâm (minimize.h / deriv.h / likelihood.h) -------------------
@@ -881,15 +900,23 @@ class TuFit:
     cl_segments: List[Tuple[datetime.datetime, float]] = field(default_factory=list)
 
     # ---- dự đoán lại với liều bổ sung -------------------------------------------------
-    def _psets_for(self, intakes: List[Intake], etas: np.ndarray) -> List[Dict[str, float]]:
-        cache: Dict[datetime.datetime, Dict[str, float]] = {}
+    def _psets_for(self, intakes: List[Intake], etas: np.ndarray, raw: bool = False) -> List[Dict[str, float]]:
+        """Bộ tham số của từng liều. tucuxi-core ≥ 27203bc: hiệp biến 'standard' (SCr, clcr...) của MỘT khoảng liều
+        lấy tại CUỐI khoảng liều (mốc biên kế tiếp sau thời điểm bắt đầu liều); tuổi tính tại thời điểm bắt đầu liều.
+        raw=True: trả giá trị điển hình (chưa áp η, chưa qua bước CL/Q của Colin)."""
+        ivs = _intake_intervals(intakes)
+        bounds = sorted({i.t for i in intakes} | {i.t + TD(hours=iv) for i, iv in zip(intakes, ivs)})
+        cache: Dict[Tuple[datetime.datetime, datetime.datetime], Dict[str, float]] = {}
         out = []
         for it in intakes:
-            g = grid_floor(self.t0, it.t)
-            if g not in cache:
-                cov = covariates_at(self.model, self.patient, self.birth, self.scr_series, g)
-                cache[g] = apply_etas(self.model, param_set(self.model, cov), etas)
-            out.append(cache[g])
+            s_eff = max(it.t, self.t0)                      # trước m_start (= mốc đo đầu − 600 h) dùng làn làm mới tại m_start
+            tv_t = next((b for b in bounds if b > s_eff), s_eff)
+            key = (tv_t, s_eff)
+            if key not in cache:
+                cov = covariates_at(self.model, self.patient, self.birth, self.scr_series, tv_t, s_eff)
+                tv = param_set(self.model, cov)
+                cache[key] = tv if raw else apply_etas(self.model, tv, etas)
+            out.append(cache[key])
         return out
 
     def params_at_cycle(self, t: datetime.datetime) -> Dict[str, float]:
@@ -912,7 +939,7 @@ def population_params(model_key: str, patient: TuPatient, scr_umol: List[Tuple[d
     scr = sorted(scr_umol, key=lambda x: x[0])
     birth = datetime.datetime(t_ref.year - int(round(patient.age_years)), 1, 1)
     cov = covariates_at(model, patient, birth, scr, t_ref)
-    return param_set(model, cov), cov, model
+    return finalize_params(model, param_set(model, cov)), cov, model
 
 
 def grid_floor(t0: datetime.datetime, t: datetime.datetime) -> datetime.datetime:
@@ -946,7 +973,8 @@ def tucuxi_fit(model_key: str, patient: TuPatient, doses: List[Tuple[datetime.da
     birth = datetime.datetime(ref.year - int(round(patient.age_years)), 1, 1)
 
     fit = TuFit(True, "", model, patient, np.zeros(len(model.eta_params)), 0.0, intakes, scr, samples, t0, birth, [], [])
-    tv_psets = fit._psets_for(intakes, np.zeros(len(model.eta_params)))
+    tv_psets = fit._psets_for(intakes, np.zeros(len(model.eta_params)), raw=True)       # TV thô (chưa η)
+    tv_prior = [finalize_params(model, tvp) for tvp in tv_psets]                         # tiền nghiệm đầy đủ (η = 0)
     sd = np.array([p.sd for p in model.eta_params])
     stimes = [s[0] for s in samples]
     yobs = np.array([s[1] for s in samples])
@@ -998,8 +1026,8 @@ def tucuxi_fit(model_key: str, patient: TuPatient, doses: List[Tuple[datetime.da
     fit.etas, fit.nll = etas, nll
     _cp = tu_series_concentrations(intakes, ivs, [apply_etas_raw(model, tvp, etas) for tvp in tv_psets], t0, stimes, guard_used)
     fit.c_post = _cp if _cp is not None else simulate_central(intakes, psets_eta(etas), t0, stimes, guard=guard_used)
-    _cr = tu_series_concentrations(intakes, ivs, tv_psets, t0, stimes, guard_used)
-    fit.c_prior = _cr if _cr is not None else simulate_central(intakes, tv_psets, t0, stimes, guard=guard_used)
+    _cr = tu_series_concentrations(intakes, ivs, tv_prior, t0, stimes, guard_used)
+    fit.c_prior = _cr if _cr is not None else simulate_central(intakes, tv_prior, t0, stimes, guard=guard_used)
 
     # Thông số cuối + đoạn CL bậc thang. Bộ tham số "hiện tại" tính tại mốc muộn nhất (liều/SCr/mẫu cuối),
     # để AUC và dự đoán liều mới dùng đúng SCr mới nhất (kể cả SCr đo SAU liều cuối).
@@ -1010,7 +1038,7 @@ def tucuxi_fit(model_key: str, patient: TuPatient, doses: List[Tuple[datetime.da
     last = apply_etas(model, tv_now, etas)
     if guard_used:
         last = guard_v2(last, ivs[-1])
-    tvl = tv_now
+    tvl = finalize_params(model, tv_now)
     fit.t_ref = t_ref
     fit.CL_optimized, fit.Vc_optimized, fit.Vp_optimized, fit.Q_value = last["CL"], last["V1"], last["V2"], last["Q"]
     fit.CL_prior, fit.Vc_prior, fit.Vp_prior = tvl["CL"], tvl["V1"], tvl["V2"]
