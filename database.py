@@ -51,14 +51,27 @@ supabase = init_supabase()
 # ==========================================
 # 2. QUẢN LÝ TÀI KHOẢN NGƯỜI DÙNG (Bảng 'Users')
 # ==========================================
+# Thông tin đăng nhập của phiên hiện tại — CHỈ giữ trong RAM, dùng để chứng minh quyền admin khi gọi hàm
+# quản lý tài khoản phía Supabase (không lưu ra đĩa, không ghi log).
+_SESSION = {"u": None, "p": None}
+def _rpc_missing(e):
+    s = str(e)
+    return "PGRST202" in s or "Could not find the function" in s
 def check_login(username, password):
+    """Đăng nhập qua hàm amg_login (mật khẩu được so sánh/băm phía Supabase, không tải cột Password về máy).
+    Nếu hàm chưa được tạo (chưa chạy SQL B1) thì tạm dùng cách cũ để phần mềm không bị gián đoạn."""
     if not supabase:
         return None
     try:
-        response = (supabase.table("Users").select("fullname, role")
-                    .eq("Username", username).eq("Password", password).execute())
-        data = response.data
+        try:
+            data = supabase.rpc("amg_login", {"p_username": username, "p_password": password}).execute().data
+        except Exception as e:
+            if not _rpc_missing(e):
+                raise
+            data = (supabase.table("Users").select("fullname, role")
+                    .eq("Username", username).eq("Password", password).execute().data)
         if data and len(data) > 0:
+            _SESSION["u"], _SESSION["p"] = username, password
             return data[0]['fullname'], data[0]['role']
         return None
     except Exception as e:
@@ -68,18 +81,30 @@ def add_user(username, password, fullname, role):
     if not supabase:
         return False, "Chưa kết nối được Cloud Database!"
     try:
-        data = {"Username": username, "Password": password, "fullname": fullname, "role": role}
-        supabase.table("Users").insert(data).execute()
+        try:
+            supabase.rpc("amg_add_user", {"p_admin": _SESSION["u"], "p_admin_pass": _SESSION["p"],
+                                          "p_username": username, "p_password": password,
+                                          "p_fullname": fullname, "p_role": role}).execute()
+        except Exception as e:
+            if not _rpc_missing(e):
+                raise
+            supabase.table("Users").insert({"Username": username, "Password": password,
+                                            "fullname": fullname, "role": role}).execute()
         return True, "Cấp tài khoản mới thành công!"
     except Exception as e:
         logger.error(f"Lỗi cấp tài khoản: {e}")
-        return False, f"Lỗi: Tên đăng nhập đã tồn tại ({e})"
+        return False, f"Lỗi: không cấp được tài khoản (trùng tên đăng nhập, mật khẩu < 6 ký tự hoặc không có quyền admin) ({e})"
 def get_all_users():
     if not supabase:
         return []
     try:
-        response = supabase.table("Users").select("Username, fullname, role").execute()
-        return [(u['Username'], u['fullname'], u['role']) for u in response.data]
+        try:
+            rows = supabase.rpc("amg_list_users", {"p_admin": _SESSION["u"], "p_admin_pass": _SESSION["p"]}).execute().data
+        except Exception as e:
+            if not _rpc_missing(e):
+                raise
+            rows = supabase.table("Users").select("Username, fullname, role").execute().data
+        return [(u['Username'], u['fullname'], u['role']) for u in rows]
     except Exception as e:
         logger.error(f"Lỗi tải danh sách người dùng: {e}")
         return []
@@ -89,7 +114,13 @@ def delete_user(username):
     if not supabase:
         return False, "Chưa kết nối Cloud!"
     try:
-        supabase.table("Users").delete().eq("Username", username).execute()
+        try:
+            supabase.rpc("amg_delete_user", {"p_admin": _SESSION["u"], "p_admin_pass": _SESSION["p"],
+                                             "p_username": username}).execute()
+        except Exception as e:
+            if not _rpc_missing(e):
+                raise
+            supabase.table("Users").delete().eq("Username", username).execute()
         return True, "Đã xóa tài khoản thành công!"
     except Exception as e:
         logger.error(f"Lỗi xóa tài khoản: {e}")
