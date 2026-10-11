@@ -1,28 +1,65 @@
 """
 amg_bayesian_calculations.py - Phuong phap Bayesian (mo hinh quan the Arechiga-Alvarado 2020,
-1 ngan, IV truyen) cho TDM Aminoglycosid.
+1 ngan, IV truyen) cho TDM AMIKACIN.
 
-File nay HOAN TOAN TACH RIENG khoi pk_calculations.py (phuong phap Sawchuk-Zaske hien co) --
-khong sua, khong dung chung dataclass/ham nao voi file do, de dam bao phuong phap cu giu
-nguyen 100% nhu yeu cau. Cau truc va quy uoc dat ten phong theo vanco_calculations.py
-(Goti/Collin) de nhat quan trong toan bo du an, nhung day la quan the hoc rieng (1 ngan,
-2 tham so CL/Vd, khong co Q/Vp).
+File nay HOAN TOAN TACH RIENG khoi pk_calculations.py (phuong phap Sawchuk-Zaske) -- khong dung
+chung dataclass/ham nao voi file do.
 
-Da kiem chung bang file Excel "bayesian_aminoglycosid.xlsx" (sheet "Arechiga-Alvarado (2020)"):
-IBW, CrCl (Cockcroft-Gault dung CAN NANG THUC - TBW, khong dung can nang hieu chinh), CLprior,
-Vprior, Cpred (chong chat lieu 1 ngan), OFV tung diem va OFV tong deu khop <0.001% sai so.
+NGUON: Arechiga-Alvarado NA et al. Antimicrob Agents Chemother 2020;64(5):e02178-19.
+  CL (L/h) = 7.1 x (CLCR/130)^0.84           (CLCR: Cockcroft-Gault, CAN NANG THUC TBW, mL/min)
+  V  (L)   = 20.3 x (IBW/68)^2.94
+  Bien thien giua nguoi DANG TI LE (Bang 2, chu thich):  CLi = CL x (1 + etaCL),  Vi = V x (1 + etaV)
+      omega_CL = 27.2 %, omega_V = 33.6 %   (CV, tuc SD cua eta = 0.272 / 0.336)
+  Sai so du CONG (homoscedastic): sigma = 1.78 mg/L (SD).
 
-LUU Y: cong thuc V/X (Cpred3, Cpred4) trong file Excel goc co loi copy-paste (tham chieu
-nham cot T thay vi U o mot so dong) -- cac ham duoi day tai hien DUNG nguyen ly chong chat
-lieu (moi Cpred_i dung dung cot thoi gian rieng cua no), khop voi dong 2 (dong duy nhat
-khong bi loi) va khop voi logic tong quat ma nguoi dung mo ta.
+PHIEN BAN 11/10/2026 -- cac thay doi so voi ban 5/10 (theo bai bao va quyet dinh cua nguoi dung):
+  1. Phat tien nghiem IIV theo DANG TI LE nhu bai bao: (eta/omega)^2 voi eta = CLi/CLpop - 1
+     (truoc day dung dang log: ln(CL/CLprior)^2/omega^2).
+  2. Thoi gian truyen (Tinf) gan voi TUNG LIEU (AmgDose.t_inf_h), khong con lay theo diem do.
+  3. Khop CHUNG tat ca cac mau (1 eta_CL, 1 eta_V cho ca dot dieu tri) voi CrCl BIEN THIEN THEO THOI GIAN:
+        CL(t) = 7.1 x (CrCl(t)/130)^0.84 x (1 + eta_CL)
+     CrCl(t) tinh tu SCr(t) -- noi suy TUYEN TINH giua cac lan do SCr, giu hang so truoc lan do dau
+     va sau lan do cuoi. Thay cho cach cu (moi lan TDM mot tien nghiem moi + CL bac thang rieng).
+  4. Mau lay trong luc truyen van duoc tinh dung (mo hinh xu ly lien tuc) nhung co CANH BAO.
+  5. Bo ham tu doan don vi SCr (compute_scr_mgdl_amg): don vi do nguoi dung chon, quy doi DUNG 1 LAN
+     (scr_to_mgdl) truoc khi dua vao bat ky ham tinh toan nao. Moi ham trong file nay nhan SCr da la mg/dL.
+  6. Them check_model_applicability_amg(): canh bao khi benh nhan/du lieu nam ngoai khoang cua bai bao.
 """
 
 import datetime
+import math
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from scipy.optimize import minimize
+
+
+# ==========================================
+# 0. HANG SO CUA MO HINH (Bang 2 bai bao)
+# ==========================================
+
+AA2020_THETA_CL = 7.1
+AA2020_EXP_CL = 0.84
+AA2020_CRCL_REF = 130.0
+AA2020_THETA_V = 20.3
+AA2020_EXP_V = 2.94
+AA2020_IBW_REF = 68.0
+AA2020_OMEGA_CL = 0.272      # SD cua eta_CL (dang ti le)
+AA2020_OMEGA_V = 0.336       # SD cua eta_V  (dang ti le)
+AA2020_SIGMA = 1.78          # SD sai so du cong (mg/L)
+
+# Khoang du lieu cua quan the xay dung/kiem dinh mo hinh (Bang 1 + phan Ket qua) -- dung de canh bao
+AA2020_RANGES = {
+    "age": (18.0, 67.0),              # 18-64 (xay dung), 18-67 (kiem dinh)
+    "weight": (44.0, 138.0),          # kg
+    "ibw": (52.0, 84.0),              # 68.1 +/- 2 SD (SD 8.1)
+    "scr": (0.2, 1.8),                # mg/dL
+    "crcl": (49.0, 211.0),            # 130 +/- 2 SD (SD 40.6) -- uoc luong, bai khong cong bo min-max
+    "cobs": (2.0, 50.0),              # 2-48.7 (dinh luong), thang hieu chuan 2-50 mg/L
+    "dose_day": (500.0, 1000.0),      # mg/ngay (trung vi 1000, khoang 500-1000)
+    "post_infusion_min_h": 0.5,       # mau lay >= 30 phut sau khi ket thuc truyen
+    "post_dose_max_h": 16.5,          # mau xa nhat 16.5 gio sau lieu
+}
 
 
 # ==========================================
@@ -35,64 +72,80 @@ class AmgPatientInfo:
     gender: str            # 'nam' hoac 'nu'
     height_cm: float
     weight_kg: float        # TBW - dung truc tiep cho Cockcroft-Gault (khong hieu chinh)
-    scr_value: float         # SCr do nguoi dung nhap (tu quy doi don vi)
+    scr_value: float         # SCr DAI DIEN, DA O DANG mg/dL (khong tu quy doi don vi)
 
 
 @dataclass
 class AmgDose:
     dose_mg: float
-    given_at: datetime.datetime
+    given_at: datetime.datetime      # thoi diem BAT DAU truyen
+    t_inf_h: float = 1.0             # thoi gian truyen CUA LIEU NAY (h)
 
 
 @dataclass
 class AmgMeasurement:
     c_obs: float
     t_obs: datetime.datetime
-    t_inf_h: float = 1.0
+    t_inf_h: float = 1.0             # (ton tai de tuong thich du lieu cu -- KHONG con duoc dung khi tinh)
 
 
 @dataclass
 class AmgPriors:
     cl_prior: float
     vd_prior: float
-    omega_cl: float = 0.272
-    omega_vd: float = 0.336
+    omega_cl: float = AA2020_OMEGA_CL
+    omega_vd: float = AA2020_OMEGA_V
 
 
 @dataclass
 class AmgBayesResult:
-    CL_optimized: float
+    CL_optimized: float            # CL HIEN TAI (tai thoi diem SCr moi nhat, da nhan (1+eta_CL))
     Vd_optimized: float
     Ke: float
     C_pred_final: float
     OFV_final: float
     success: bool
     message: str = ""
-    points: list = field(default_factory=list)  # [{"t_obs","c_obs","c_pred","ofv"}]
-    anchor_dose: object = None  # AmgDose "dang dung" (lieu ke truoc cac diem do cua block nay)
-
-
-# Sai so du CO DINH cua mo hinh Arechiga-Alvarado 2020 (chi co SD cong gop, KHONG co CV%)
-AA2020_SIGMA = 1.78
+    points: list = field(default_factory=list)  # [{"t_obs","c_obs","c_pred","ofv","dose_index","in_infusion",...}]
+    anchor_dose: object = None     # AmgDose lien truoc diem do cuoi cung (de lay liều/tau hien dang dung)
+    eta_cl: float = 0.0
+    eta_vd: float = 0.0
+    cl_pop_current: float = 0.0    # CL quan the tai SCr moi nhat (chua nhan eta)
+    vd_pop: float = 0.0
+    crcl_current: float = 0.0
+    ofv_prior: float = 0.0         # phan phat tien nghiem (eta/omega)^2
+    ofv_obs: float = 0.0           # phan sai so quan sat
+    n_used: int = 0                # so diem do duoc dung
 
 
 # ==========================================
-# 2. TIEN NGHIEM QUAN THE (Arechiga-Alvarado 2020)
+# 2. DON VI SCr (quy doi DUNG 1 LAN)
 # ==========================================
 
-def compute_scr_mgdl_amg(scr_value: float) -> float:
-    """Tu quy doi don vi SCr: neu > 10 thi hieu la umol/L (chia 88.4), nguoc lai la mg/dL san."""
-    return scr_value / 88.4 if scr_value > 10 else scr_value
+def scr_to_mgdl(value: float, unit: str) -> float:
+    """Quy doi SCr nguoi dung nhap sang mg/dL THEO DON VI HO CHON (khong doan don vi theo nguong).
+    Chi duoc goi 1 LAN o tang giao dien; moi ham tinh toan ben duoi nhan SCr da la mg/dL."""
+    u = str(unit).strip().lower().replace("µ", "u").replace("μ", "u")
+    if u.startswith("umol") or u.startswith("micromol"):
+        return float(value) / 88.4
+    if u.startswith("mg"):
+        return float(value)
+    raise ValueError(f"Đơn vị SCr không hợp lệ: {unit!r}")
 
+
+# ==========================================
+# 3. TIEN NGHIEM QUAN THE (Arechiga-Alvarado 2020)
+# ==========================================
 
 def compute_ibw_amg(gender: str, height_cm: float) -> float:
-    """IBW (Devine) -- dang quy doi theo cm, tai hien dung cong thuc C20 cua Excel."""
+    """IBW (Devine) -- bai bao KHONG neu cong thuc IBW; dung Devine theo thong le
+    (luu y: Bang 1 cua bai cho IBW trung binh cao hon Devine khoang 2.6 kg -- chua xac minh)."""
     over = max(0.0, height_cm - 152.4)
     return (50.0 + 0.9 * over) if gender.lower() in ("nam", "male", "m") else (45.5 + 0.9 * over)
 
 
 def compute_crcl_amg(age: float, gender: str, weight_kg: float, scr_mgdl: float) -> float:
-    """CrCl (Cockcroft-Gault) -- dung CAN NANG THUC (TBW), khong hieu chinh -- dung cong thuc C21."""
+    """CrCl (Cockcroft-Gault) dung CAN NANG THUC (TBW) -- dung theo bai bao. SCr: mg/dL."""
     if scr_mgdl <= 0 or age >= 140:
         return 0.0
     crcl = ((140.0 - age) * weight_kg) / (72.0 * scr_mgdl)
@@ -100,348 +153,363 @@ def compute_crcl_amg(age: float, gender: str, weight_kg: float, scr_mgdl: float)
 
 
 def compute_cl_prior_amg(crcl: float) -> float:
-    """CLprior = 7.1 * (CrCl/130)^0.84 -- cong thuc C23."""
-    return 7.1 * ((max(crcl, 1e-6) / 130.0) ** 0.84)
+    """CL quan the = 7.1 * (CrCl/130)^0.84 (L/h)."""
+    return AA2020_THETA_CL * ((max(crcl, 1e-6) / AA2020_CRCL_REF) ** AA2020_EXP_CL)
 
 
 def compute_vd_prior_amg(ibw: float) -> float:
-    """Vprior = 20.3 * (IBW/68)^2.94 -- cong thuc C24."""
-    return 20.3 * ((max(ibw, 1e-6) / 68.0) ** 2.94)
+    """V quan the = 20.3 * (IBW/68)^2.94 (L)."""
+    return AA2020_THETA_V * ((max(ibw, 1e-6) / AA2020_IBW_REF) ** AA2020_EXP_V)
 
 
 def compute_population_priors_amg(patient: AmgPatientInfo) -> Tuple[AmgPriors, dict]:
-    """Tinh CLprior/Vprior day du tu thong tin benh nhan (dung SCr dai dien -- thuong la lan
-    do gan/moi nhat do UI cung cap).
-
-    LUU Y VE DON VI: patient.scr_value PHAI DA o dang mg/dL (KHONG con tu doan don vi theo
-    nguong >10 nua). Tu khi giao dien co o chon don vi tuong minh (mg/dL / umol/L) cho tung
-    dong SCr, viec quy doi duoc UI thuc hien 1 LAN DUY NHAT truoc khi goi ham nay -- neu goi
-    lai compute_scr_mgdl_amg() o day se GAY LOI CHIA 88.4 LAN 2 doi voi benh nhan suy than
-    nang/loc mau co SCr thuc te > 10 mg/dL (khong hiem trong quan the dung aminoglycosid),
-    lam SCr bi tinh sai thanh qua thap -> CLprior bi uoc luong sai qua cao. Neu can auto-doan
-    don vi tu 1 gia tri tho chua ro don vi, hay tu goi compute_scr_mgdl_amg() truoc khi tao
-    AmgPatientInfo, KHONG dua vao ham nay tu lam viec do."""
+    """CLpop/Vpop tai SCr dai dien trong patient.scr_value (PHAI da la mg/dL)."""
     ibw = compute_ibw_amg(patient.gender, patient.height_cm)
     scr_mgdl = patient.scr_value
     crcl = compute_crcl_amg(patient.age, patient.gender, patient.weight_kg, scr_mgdl)
-    cl_prior = compute_cl_prior_amg(crcl)
-    vd_prior = compute_vd_prior_amg(ibw)
-    priors = AmgPriors(cl_prior=cl_prior, vd_prior=vd_prior)
-    details = {"ibw": ibw, "scr_mgdl": scr_mgdl, "crcl": crcl}
-    return priors, details
+    priors = AmgPriors(cl_prior=compute_cl_prior_amg(crcl), vd_prior=compute_vd_prior_amg(ibw))
+    return priors, {"ibw": ibw, "scr_mgdl": scr_mgdl, "crcl": crcl}
 
 
-def recompute_cl_prior_amg(patient: AmgPatientInfo, scr_value: float) -> float:
-    """Tinh lai CLprior voi 1 gia tri SCr KHAC (cua lan do gan Tobs cua 1 khoang dua lieu cu
-    the) -- tuoi/gioi/can nang giu nguyen theo thong tin benh nhan. Dung cho cap nhat tuan tu
-    qua nhieu lan TDM (yeu cau #4).
+# ==========================================
+# 4. SCr(t) -> CrCl(t) -> CL quan the theo thoi gian
+# ==========================================
 
-    LUU Y VE DON VI: scr_value PHAI DA o dang mg/dL -- xem giai thich chi tiet trong docstring
-    cua compute_population_priors_amg() o tren (khong tu doan don vi theo nguong >10 nua)."""
-    scr_mgdl = scr_value
-    crcl = compute_crcl_amg(patient.age, patient.gender, patient.weight_kg, scr_mgdl)
-    return compute_cl_prior_amg(crcl)
+def _sorted_scr(scr_entries):
+    es = sorted([(float(s), t) for s, t in scr_entries if s is not None and float(s) > 0], key=lambda e: e[1])
+    if not es:
+        raise ValueError("Cần ít nhất 1 lần đo SCr hợp lệ (> 0).")
+    return es
 
 
 def find_nearest_scr_amg(scr_entries, t_obs):
-    """scr_entries: list (scr_value, thoi_diem_do). Tra ve SCr co thoi diem do GAN t_obs NHAT."""
+    """(giu lai de tuong thich) SCr co thoi diem do gan t_obs nhat."""
     if not scr_entries:
         return None
     return min(scr_entries, key=lambda e: abs((e[1] - t_obs).total_seconds()))[0]
 
 
 # ==========================================
-# 3. Cpred (CHONG CHAT LIEU, 1 NGAN) + OFV
+# 5. GAN MAU VAO LIEU + MO PHONG THEO THOI GIAN
 # ==========================================
 
-def compute_cpred_amg(cl: float, vd: float, doses: List[AmgDose],
-                       t_obs: datetime.datetime, t_inf_h: float) -> float:
-    """Nong do du doan tai t_obs = tong dong gop cua TAT CA cac lieu da truyen truoc do
-    (nguyen ly chong chat lieu, mo hinh 1 ngan) -- tai hien dung cot R/T/V/X cua Excel:
-        C_dose = (dose/(Tinf*CL)) * (1 - exp(-Ke*Tinf)) * exp(-Ke*p)   voi p = thoi gian
-        SAU KHI DUNG TRUYEN den t_obs (p<0 -> lieu do chua dong gop, bo qua)."""
+def assign_measurements_amg(measurements: List[AmgMeasurement], doses: List[AmgDose]) -> list:
+    """Voi moi diem do, xac dinh LIEU lien truoc (lieu co given_at muon nhat nhung <= t_obs, danh so theo
+    thu tu thoi gian, bat dau tu 0). Tra ve list dict (dung thu tu measurements dau vao):
+      dose_index (None neu mau truoc lieu dau), hours_after_start, hours_after_end (am = dang truyen),
+      in_infusion (True neu mau nam TRONG thoi gian truyen cua lieu do)."""
+    ds = sorted(doses, key=lambda d: d.given_at)
+    out = []
+    for m in measurements:
+        idx = None
+        for i, d in enumerate(ds):
+            if d.given_at <= m.t_obs:
+                idx = i
+            else:
+                break
+        if idx is None:
+            out.append({"measurement": m, "dose_index": None, "dose": None, "hours_after_start": None,
+                        "hours_after_end": None, "in_infusion": False})
+            continue
+        d = ds[idx]
+        hs = (m.t_obs - d.given_at).total_seconds() / 3600.0
+        out.append({"measurement": m, "dose_index": idx, "dose": d, "hours_after_start": hs,
+                    "hours_after_end": hs - d.t_inf_h, "in_infusion": hs < d.t_inf_h})
+    return out
+
+
+class AmgTimeline:
+    """Luoi thoi gian de tich phan  dA/dt = R(t) - k(t)*A,  k(t) = CL(t)/V,  CL(t) = CLpop(CrCl(t)) * (1+eta_CL).
+    Cac moc: moi bat dau/ket thuc truyen, moi lan do SCr, moi thoi diem can du doan. Doan nao nam trong vung
+    SCr bien thien duoc chia nho toi da dt_max gio (k tinh o diem giua doan; nghiem dong trong tung doan).
+    Luoi chi phu thuoc benh nhan/SCr/lieu -- KHONG phu thuoc eta, V -- nen dung lai nhieu lan khi toi uu."""
+
+    def __init__(self, patient: AmgPatientInfo, scr_entries, doses: List[AmgDose], eval_times, dt_max: float = 0.25):
+        if not doses:
+            raise ValueError("Chưa có liều.")
+        ds = sorted(doses, key=lambda d: d.given_at)
+        self.doses = ds
+        self.t_start = ds[0].given_at
+        H = lambda t: (t - self.t_start).total_seconds() / 3600.0
+        scr = _sorted_scr(scr_entries)
+        scr_h = np.array([H(t) for _, t in scr])
+        scr_v = np.array([s for s, _ in scr])
+        self._scr_h, self._scr_v = scr_h, scr_v
+        self.scr_last = float(scr_v[-1])
+        self.patient = patient
+        eval_h = [H(t) for t in eval_times]
+        self.eval_h = eval_h
+        pos = [h for h in eval_h if h > 0]
+        self.t_max_h = max(pos) if pos else 0.0
+
+        bps = {0.0, self.t_max_h}
+        for d in ds:
+            bps.add(H(d.given_at))
+            bps.add(H(d.given_at) + float(d.t_inf_h))
+        bps.update(h for h in scr_h if 0 < h < self.t_max_h)
+        bps.update(pos)
+        bps = sorted(b for b in bps if 0.0 <= b <= self.t_max_h)
+        var_lo, var_hi = float(scr_h[0]), float(scr_h[-1])   # vung SCr bien thien
+
+        starts, dts, rates, cl_pops, crcls = [], [], [], [], []
+        for a, b in zip(bps[:-1], bps[1:]):
+            if b - a <= 1e-12:
+                continue
+            n = 1
+            if len(scr_h) > 1 and b > var_lo and a < var_hi:
+                n = max(1, int(math.ceil((b - a) / dt_max)))
+            step = (b - a) / n
+            for j in range(n):
+                s0 = a + j * step
+                mid = s0 + step / 2.0
+                rate = 0.0
+                for d in ds:
+                    d0 = H(d.given_at)
+                    if d0 <= mid < d0 + float(d.t_inf_h):
+                        rate += d.dose_mg / float(d.t_inf_h)
+                scr_mid = float(np.interp(mid, scr_h, scr_v))
+                crcl = compute_crcl_amg(patient.age, patient.gender, patient.weight_kg, scr_mid)
+                starts.append(s0)
+                dts.append(step)
+                rates.append(rate)
+                crcls.append(crcl)
+                cl_pops.append(compute_cl_prior_amg(crcl))
+        self.starts = np.array(starts)
+        self.dts = np.array(dts)
+        self.rates = np.array(rates)
+        self.cl_pop = np.array(cl_pops)
+        self.crcl = np.array(crcls)
+        self.ends = self.starts + self.dts
+        # chi so doan ket thuc tai moi thoi diem du doan
+        self.eval_idx = []
+        for h in eval_h:
+            if h <= 0 or len(self.ends) == 0:
+                self.eval_idx.append(-1)
+            else:
+                self.eval_idx.append(int(np.argmin(np.abs(self.ends - h))))
+        # CL quan the "hien tai" = tai SCr moi nhat (hoac sau do)
+        crcl_now = compute_crcl_amg(patient.age, patient.gender, patient.weight_kg, self.scr_last)
+        self.crcl_now = crcl_now
+        self.cl_pop_now = compute_cl_prior_amg(crcl_now)
+
+    def concentrations(self, eta_cl: float, eta_v: float, vd_pop: float) -> List[float]:
+        """Nong do tai cac thoi diem du doan (theo thu tu eval_times), voi CL(t)=CLpop(t)(1+eta_cl), V=vd_pop(1+eta_v)."""
+        V = vd_pop * (1.0 + eta_v)
+        f = 1.0 + eta_cl
+        if V <= 0 or f <= 0 or len(self.dts) == 0:
+            return [0.0] * len(self.eval_h)
+        k = f * self.cl_pop / V
+        decay = np.exp(-k * self.dts)
+        gain = (self.rates / k) * (1.0 - decay)
+        amount = np.empty(len(k))
+        a = 0.0
+        for i in range(len(k)):
+            a = a * decay[i] + gain[i]
+            amount[i] = a
+        return [0.0 if idx < 0 else float(amount[idx] / V) for idx in self.eval_idx]
+
+
+def simulate_concentration_curve_amg_tv(patient: AmgPatientInfo, scr_entries, doses: List[AmgDose],
+                                         eta_cl: float, vd: float, t_end: datetime.datetime, n_points: int = 300):
+    """Duong cong C(t) dung CL(t) bien thien theo SCr. vd = V cuoi cung (da nhan (1+eta_V))."""
+    if not doses:
+        return [], []
+    t_start = min(d.given_at for d in doses)
+    total_h = (t_end - t_start).total_seconds() / 3600.0
+    if total_h <= 0:
+        return [], []
+    times = [t_start + datetime.timedelta(hours=float(h)) for h in np.linspace(0, total_h, n_points)]
+    tl = AmgTimeline(patient, scr_entries, doses, times)
+    return times, tl.concentrations(eta_cl, 0.0, vd)
+
+
+def compute_cpred_amg(cl: float, vd: float, doses: List[AmgDose], t_obs: datetime.datetime,
+                       t_inf_h: Optional[float] = None) -> float:
+    """Nong do du doan voi CL HANG SO (cong thuc dong, chong chat lieu) -- dung de doi chieu/kiem tra.
+    Mau lay TRONG luc truyen duoc tinh dung (pha tang). t_inf_h=None -> dung Tinf cua tung lieu."""
     ke = cl / vd if vd > 0 else 0.0
-    if ke <= 0 or t_inf_h <= 0 or cl <= 0:
+    if ke <= 0 or cl <= 0:
         return 0.0
     total = 0.0
     for d in doses:
-        p = (t_obs - d.given_at).total_seconds() / 3600.0 - t_inf_h
-        if p < 0:
+        ti = float(d.t_inf_h if t_inf_h is None else t_inf_h)
+        el = (t_obs - d.given_at).total_seconds() / 3600.0
+        if el <= 0 or ti <= 0:
             continue
-        total += (d.dose_mg / (t_inf_h * cl)) * (1 - np.exp(-ke * t_inf_h)) * np.exp(-ke * p)
+        base = d.dose_mg / (ti * cl)
+        total += base * (1 - math.exp(-ke * el)) if el <= ti else base * (1 - math.exp(-ke * ti)) * math.exp(-ke * (el - ti))
     return total
 
 
-def _cl_segments_for_solve_amg(cl: float, doses: List[AmgDose], historical_cl_segments,
-                                current_segment_start) -> List[Tuple[datetime.datetime, float]]:
-    """Ghep cac doan CL da CO DINH tu nhung lan TDM truoc (historical_cl_segments) voi doan HIEN TAI
-    dung "cl" (gia tri dang duoc toi uu), bat dau tu current_segment_start (mac dinh: lieu dau tien).
-    Neu khong co lich su -> chi 1 doan duy nhat, tuong duong CL khong doi (hanh vi goc)."""
-    seg_start = current_segment_start if current_segment_start is not None else min(d.given_at for d in doses)
-    return list(historical_cl_segments or []) + [(seg_start, cl)]
-
-
-def compute_ofv_amg(cl: float, vd: float, priors: AmgPriors, doses: List[AmgDose],
-                     measurements: List[AmgMeasurement], sigma: float = AA2020_SIGMA,
-                     historical_cl_segments=None, current_segment_start=None) -> float:
-    """OFV_tong = OFV_CL + OFV_Vd + Sigma_i (Cobs_i - Cpred_i)^2 / sigma^2 (yeu cau #3, #4).
-    Cpred dung CL BAC THANG THEO THOI GIAN (xu ly AKI) -- xem _cl_segments_for_solve_amg()."""
-    ofv_cl = ((np.log(cl) - np.log(priors.cl_prior)) ** 2) / (priors.omega_cl ** 2)
-    ofv_vd = ((np.log(vd) - np.log(priors.vd_prior)) ** 2) / (priors.omega_vd ** 2)
-    segs = _cl_segments_for_solve_amg(cl, doses, historical_cl_segments, current_segment_start)
-    ofv_points = 0.0
-    for m in measurements:
-        c_pred = compute_cpred_amg_piecewise(segs, vd, doses, m.t_obs, m.t_inf_h)
-        ofv_points += ((m.c_obs - c_pred) ** 2) / (sigma ** 2)
-    return ofv_cl + ofv_vd + ofv_points
-
 # ==========================================
-# 4. TOI UU HOA BAYES (1 khoang dua lieu / 1 lan goi)
+# 6. TOI UU HOA BAYES (MAP) -- KHOP CHUNG TAT CA CAC MAU
 # ==========================================
 
-def solve_bayesian_posterior_amg(priors: AmgPriors, doses: List[AmgDose], measurements,
-                                  sigma: float = AA2020_SIGMA,
-                                  cl_min: float = 0.05, vd_min: float = 1.0,
-                                  historical_cl_segments=None, current_segment_start=None) -> AmgBayesResult:
-    """Toi uu (CL_post, Vd_post) de OFV nho nhat -- tuong duong GRG Nonlinear cua Excel Solver.
-    Ho tro NHIEU diem do cung luc (measurements la list) -- khi do toi uu chung 1 lan (yeu cau #1)."""
-    measurements = [measurements] if isinstance(measurements, AmgMeasurement) else list(measurements)
+def solve_bayesian_joint_amg(patient: AmgPatientInfo, scr_entries, doses: List[AmgDose],
+                              measurements: List[AmgMeasurement], sigma: float = AA2020_SIGMA,
+                              omega_cl: float = AA2020_OMEGA_CL, omega_v: float = AA2020_OMEGA_V,
+                              cl_min: float = 0.05, vd_min: float = 1.0) -> AmgBayesResult:
+    """Uoc luong (eta_CL, eta_V) cho CA DOT DIEU TRI bang cuc tieu hoa
+        OFV = (eta_CL/omega_CL)^2 + (eta_V/omega_V)^2 + SUM_i ((Cobs_i - Cpred_i)/sigma)^2
+    (IIV dang ti le theo bai bao). Cpred_i tinh bang tich phan voi CL(t) = CLpop(CrCl(t))*(1+eta_CL) va Tinf cua
+    tung lieu. Diem do TRUOC lieu dau tien bi bo qua."""
     if not doses:
-        return AmgBayesResult(0, 0, 0, 0, 0, False, "Chua co du lieu lich su lieu dung.")
+        return AmgBayesResult(0, 0, 0, 0, 0, False, "Chưa có dữ liệu lịch sử liều dùng.")
     if not measurements:
-        return AmgBayesResult(0, 0, 0, 0, 0, False, "Chua co diem do Cobs/Tobs nao.")
+        return AmgBayesResult(0, 0, 0, 0, 0, False, "Chưa có điểm đo Cobs/Tobs nào.")
+    try:
+        _sorted_scr(scr_entries)
+    except ValueError as e:
+        return AmgBayesResult(0, 0, 0, 0, 0, False, str(e))
+    ds = sorted(doses, key=lambda d: d.given_at)
+    if any(d.t_inf_h <= 0 or d.dose_mg <= 0 for d in ds):
+        return AmgBayesResult(0, 0, 0, 0, 0, False, "Mỗi liều phải có liều (mg) > 0 và thời gian truyền > 0.")
+    used = sorted([m for m in measurements if m.t_obs > ds[0].given_at], key=lambda m: m.t_obs)
+    if not used:
+        return AmgBayesResult(0, 0, 0, 0, 0, False, "Mọi điểm đo (Tobs) đều nằm trước liều đầu tiên.")
 
-    x0 = np.array([priors.cl_prior, priors.vd_prior], dtype=float)
-    bounds = [(cl_min, None), (vd_min, None)]
+    vd_pop = compute_vd_prior_amg(compute_ibw_amg(patient.gender, patient.height_cm))
+    tl = AmgTimeline(patient, scr_entries, ds, [m.t_obs for m in used])
+    cobs = np.array([m.c_obs for m in used], dtype=float)
+
+    lb_cl = max(-0.95, cl_min / max(tl.cl_pop_now, 1e-9) - 1.0)
+    lb_v = max(-0.95, vd_min / max(vd_pop, 1e-9) - 1.0)
+    bounds = [(lb_cl, None), (lb_v, None)]
+
+    def parts(x):
+        pred = np.array(tl.concentrations(x[0], x[1], vd_pop))
+        o_obs = float(np.sum(((cobs - pred) / sigma) ** 2))
+        o_pri = float((x[0] / omega_cl) ** 2 + (x[1] / omega_v) ** 2)
+        return o_pri, o_obs, pred
 
     def objective(x):
-        return compute_ofv_amg(x[0], x[1], priors, doses, measurements, sigma,
-                                historical_cl_segments, current_segment_start)
+        if x[0] <= lb_cl - 1e-9 or x[1] <= lb_v - 1e-9:
+            return 1e12
+        o_pri, o_obs, _ = parts(x)
+        return o_pri + o_obs
 
-    best = None
-    for method in ("L-BFGS-B", "SLSQP"):
+    cands = []
+    for x0 in ([0.0, 0.0], [0.5, 0.0], [-0.5, 0.0], [0.0, 0.5], [0.0, -0.4], [0.8, 0.5], [-0.6, -0.3]):
         try:
-            res = minimize(objective, x0, method=method, bounds=bounds,
-                            options={"maxiter": 500, "ftol": 1e-12})
-            if res.success and (best is None or res.fun < best.fun):
-                best = res
+            r = minimize(objective, np.array(x0, float), method="L-BFGS-B", bounds=bounds,
+                         options={"maxiter": 500, "ftol": 1e-13})
+            if np.isfinite(r.fun):
+                cands.append(r)
         except Exception:
             continue
-    if best is None:
-        return AmgBayesResult(0, 0, 0, 0, 0, False, "Thuat toan toi uu khong hoi tu.")
+    if not cands:
+        return AmgBayesResult(0, 0, 0, 0, 0, False, "Thuật toán tối ưu không hội tụ.")
+    best = min(cands, key=lambda r: r.fun)
+    try:   # tinh chinh khong dung dao ham (on dinh khi L-BFGS-B dung som)
+        r2 = minimize(objective, best.x, method="Nelder-Mead", options={"xatol": 1e-8, "fatol": 1e-12, "maxiter": 2000})
+        if np.isfinite(r2.fun) and r2.fun <= best.fun:
+            best = r2
+    except Exception:
+        pass
+    eta_cl, eta_v = float(best.x[0]), float(best.x[1])
+    o_pri, o_obs, pred = parts(best.x)
 
-    cl_opt, vd_opt = best.x
-    ke = cl_opt / vd_opt
-    measurements_sorted = sorted(measurements, key=lambda m: m.t_obs)
-    cl_segments_final = _cl_segments_for_solve_amg(cl_opt, doses, historical_cl_segments, current_segment_start)
+    cl_now = tl.cl_pop_now * (1.0 + eta_cl)
+    v_now = vd_pop * (1.0 + eta_v)
+    assign = {id(a["measurement"]): a for a in assign_measurements_amg(used, ds)}
     points = []
-    for m in measurements_sorted:
-        c_pred_i = compute_cpred_amg_piecewise(cl_segments_final, vd_opt, doses, m.t_obs, m.t_inf_h)
-        ofv_i = ((m.c_obs - c_pred_i) ** 2) / (sigma ** 2)
-        points.append({"t_obs": m.t_obs, "c_obs": m.c_obs, "c_pred": float(c_pred_i), "ofv": float(ofv_i)})
-    c_pred_final = points[-1]["c_pred"] if points else 0.0
-
-    return AmgBayesResult(CL_optimized=float(cl_opt), Vd_optimized=float(vd_opt), Ke=float(ke),
-                           C_pred_final=float(c_pred_final), OFV_final=float(best.fun),
-                           success=True, message="Da hoi tu thanh cong.", points=points)
+    for m, p in zip(used, pred):
+        a = assign[id(m)]
+        points.append({"t_obs": m.t_obs, "c_obs": m.c_obs, "c_pred": float(p),
+                       "ofv": float(((m.c_obs - p) / sigma) ** 2),
+                       "dose_index": a["dose_index"], "in_infusion": a["in_infusion"],
+                       "hours_after_end": a["hours_after_end"]})
+    last_assign = assign[id(used[-1])]
+    return AmgBayesResult(
+        CL_optimized=float(cl_now), Vd_optimized=float(v_now), Ke=float(cl_now / v_now),
+        C_pred_final=float(pred[-1]), OFV_final=float(o_pri + o_obs), success=True,
+        message="Đã hội tụ thành công.", points=points, anchor_dose=last_assign["dose"],
+        eta_cl=eta_cl, eta_vd=eta_v, cl_pop_current=float(tl.cl_pop_now), vd_pop=float(vd_pop),
+        crcl_current=float(tl.crcl_now), ofv_prior=o_pri, ofv_obs=o_obs, n_used=len(used))
 
 
 # ==========================================
-# 5. NHIEU LAN TDM (Sequential Bayesian theo occasion, giong kien truc vanco_calculations.py)
+# 7. CANH BAO PHAM VI AP DUNG CUA MO HINH
 # ==========================================
 
-def group_measurements_by_dose_block_amg(measurements: List[AmgMeasurement], doses: List[AmgDose]):
-    """Gom diem do theo 'khoang dua lieu' dang hieu luc tai Tobs: lieu neo (anchor) = lieu co
-    given_at MUON NHAT nhung <= Tobs. Cung lieu neo -> cung block, chay OFV chung 1 lan."""
-    doses_sorted = sorted(doses, key=lambda d: d.given_at)
-    grouped = {}
-    orphans = []
-    for m in measurements:
-        anchor = None
-        for d in doses_sorted:
-            if d.given_at <= m.t_obs:
-                anchor = d
-            else:
-                break
-        if anchor is None:
-            orphans.append(m)
+def check_model_applicability_amg(patient: AmgPatientInfo, scr_entries, doses: List[AmgDose],
+                                   measurements: List[AmgMeasurement]) -> list:
+    """Trả về list (level, text); level: 'warn' | 'info'. Chỉ CẢNH BÁO, không chặn tính toán.
+    scr_entries: (SCr mg/dL, thời điểm). Khoảng tham chiếu = AA2020_RANGES (quần thể của bài báo)."""
+    R = AA2020_RANGES
+    out = []
+    ds = sorted(doses, key=lambda d: d.given_at)
+
+    def rng(key):
+        lo, hi = R[key]
+        return f"{lo:g}–{hi:g}"
+
+    if patient.age < R["age"][0] or patient.age > R["age"][1]:
+        out.append(("warn", f"Tuổi {patient.age:g} nằm ngoài khoảng của quần thể xây dựng mô hình ({rng('age')}; trung vị 33,5) — "
+                            "bài báo khuyến cáo thận trọng khi ngoại suy sang quần thể khác."))
+    if str(patient.gender).lower() not in ("nam", "male", "m"):
+        out.append(("info", "Nữ chỉ chiếm ~10% (5/50) bệnh nhân xây dựng mô hình."))
+    if patient.weight_kg < R["weight"][0] or patient.weight_kg > R["weight"][1]:
+        out.append(("warn", f"Cân nặng {patient.weight_kg:g} kg nằm ngoài khoảng của bài báo ({rng('weight')} kg)."))
+    ibw = compute_ibw_amg(patient.gender, patient.height_cm)
+    if ibw < R["ibw"][0] or ibw > R["ibw"][1]:
+        out.append(("warn", f"IBW {ibw:.1f} kg nằm ngoài khoảng ~{rng('ibw')} kg (68,1 ± 2SD). V quần thể = 20,3×(IBW/68)^2,94 "
+                            f"= {compute_vd_prior_amg(ibw):.1f} L rất nhạy với IBW (số mũ 2,94; KTC 95% 1,27–5,40) nên tiên nghiệm V kém chắc chắn."))
+    for s, t in sorted(scr_entries, key=lambda e: e[1]):
+        if s < R["scr"][0] or s > R["scr"][1]:
+            out.append(("warn", f"SCr {s:.2f} mg/dL ({t:%d/%m %H:%M}) ngoài khoảng của bài báo ({rng('scr')} mg/dL)."))
+        crcl = compute_crcl_amg(patient.age, patient.gender, patient.weight_kg, s)
+        if crcl < R["crcl"][0] or crcl > R["crcl"][1]:
+            out.append(("warn", f"CrCl (CG, TBW) = {crcl:.0f} mL/phút ({t:%d/%m %H:%M}) ngoài khoảng ~{rng('crcl')} mL/phút "
+                                "(130 ± 2SD của quần thể) — ít dữ liệu ở vùng này."))
+    if ds:
+        first_scr_t = min(t for _, t in scr_entries) if scr_entries else None
+        if first_scr_t is not None and first_scr_t > ds[0].given_at:
+            gap = (first_scr_t - ds[0].given_at).total_seconds() / 3600.0
+            if gap >= 12:
+                out.append(("info", f"SCr đầu tiên đo sau liều đầu {gap:.0f} h: giả định SCr không đổi trước thời điểm đó."))
+        for a, b in zip(ds[:-1], ds[1:]):
+            gap = (b.given_at - a.given_at).total_seconds() / 3600.0
+            if gap < 20:
+                out.append(("warn", f"Khoảng cách giữa 2 liều ({a.given_at:%d/%m %H:%M} → {b.given_at:%d/%m %H:%M}) chỉ {gap:.1f} h: "
+                                    "mô hình được xây dựng cho liều 1 lần/ngày."))
+        for d in ds:
+            if d.dose_mg > R["dose_day"][1] * 1.0001 or d.dose_mg < R["dose_day"][0] * 0.9999:
+                out.append(("info", f"Liều {d.dose_mg:g} mg ({d.given_at:%d/%m %H:%M}) ngoài khoảng {rng('dose_day')} mg/ngày của bài báo."))
+        out.append(("info", "Giả định lịch sử liều đầy đủ từ LIỀU ĐẦU TIÊN của đợt điều trị (không còn thuốc tồn trước liều đầu trong bảng)."))
+    assigns = assign_measurements_amg(measurements, ds)
+    for a in assigns:
+        m = a["measurement"]
+        if a["dose_index"] is None:
+            out.append(("warn", f"Mẫu Tobs {m.t_obs:%d/%m %H:%M} (Cobs {m.c_obs:g}) nằm TRƯỚC liều đầu tiên — sẽ bị bỏ qua."))
             continue
-        grouped.setdefault(anchor.given_at, {"anchor_dose": anchor, "measurements": []})
-        grouped[anchor.given_at]["measurements"].append(m)
-    blocks = [grouped[k] for k in sorted(grouped.keys())]
-    for b in blocks:
-        b["measurements"].sort(key=lambda m: m.t_obs)
-    return blocks, orphans
+        n = a["dose_index"] + 1
+        if a["in_infusion"]:
+            out.append(("warn", f"Mẫu Tobs {m.t_obs:%d/%m %H:%M} (Cobs {m.c_obs:g}) lấy TRONG THỜI GIAN TRUYỀN của liều thứ {n} "
+                                f"(sau {a['hours_after_start']:.2f} h / Tinf {a['dose'].t_inf_h:g} h). Vẫn được tính (mô hình liên tục) "
+                                "nhưng bài báo chỉ dùng mẫu lấy sau khi kết thúc truyền — kết quả kém tin cậy, nên kiểm tra lại giờ lấy mẫu."))
+        elif a["hours_after_end"] < R["post_infusion_min_h"]:
+            out.append(("warn", f"Mẫu Tobs {m.t_obs:%d/%m %H:%M} lấy chỉ {a['hours_after_end']*60:.0f} phút sau khi kết thúc truyền liều thứ {n} "
+                                "(bài báo: ≥ 30 phút) — có thể còn pha phân bố."))
+        elif a["hours_after_start"] > R["post_dose_max_h"] + a["dose"].t_inf_h:
+            out.append(("info", f"Mẫu Tobs {m.t_obs:%d/%m %H:%M} lấy {a['hours_after_start']:.1f} h sau liều thứ {n} "
+                                f"(bài báo: tối đa ~{R['post_dose_max_h']:g} h)."))
+        if m.c_obs < R["cobs"][0] or m.c_obs > R["cobs"][1]:
+            out.append(("warn", f"Cobs {m.c_obs:g} µg/mL ({m.t_obs:%d/%m %H:%M}) ngoài thang {rng('cobs')} µg/mL của bài báo."))
+    if len([a for a in assigns if a["dose_index"] is not None]) == 1:
+        out.append(("info", "Chỉ có 1 điểm đo: kết quả phụ thuộc nhiều vào tiên nghiệm quần thể (cả CL và V đều được ước lượng từ 1 mẫu)."))
+    return out
 
-
-def recompute_full_priors_amg(patient: AmgPatientInfo, scr_value: float) -> AmgPriors:
-    """Tinh lai TOAN BO tien nghiem (CL/Vd) theo mo hinh Arechiga-Alvarado 2020 tu 1 gia tri
-    SCr cu the (mg/dL, cua lan do gan Tobs cua 1 khoang dua lieu cu the) -- dung cho MOI lan
-    TDM (ke ca lan dau), KHONG ke thua hau nghiem cua lan TDM truoc. Ly do (giong het
-    vanco_calculations.recompute_full_priors_goti()): omega_vd do do bien thien GIUA CAC
-    BENH NHAN so voi quan the, khong phai do tin cay cua 1 uoc luong hau nghiem tu du lieu
-    thua (thuong chi 1 mau) cua lan truoc -- neu ke thua hau nghiem lam tien nghiem moi ma
-    van dung omega quan the goc, sai lech ngau nhien cua 1 lan do se neo lai vinh vien qua
-    cac lan sau (hien tuong "troi dat" ra khoi quan the tham khao)."""
-    patient_i = AmgPatientInfo(age=patient.age, gender=patient.gender, height_cm=patient.height_cm,
-                                weight_kg=patient.weight_kg, scr_value=scr_value)
-    priors, _ = compute_population_priors_amg(patient_i)
-    return priors
-
-
-def solve_bayesian_sequential_amg(doses: List[AmgDose], blocks: list, recompute_priors_fn,
-                                   nearest_scr_fn, sigma: float = AA2020_SIGMA):
-    """Toi uu Bayes qua tung block (moi block = 1 khoang dua lieu).
-
-    (1) Tien nghiem: MOI block (ke ca block dau) dung tien nghiem CL/Vd TINH LAI HOAN TOAN MOI tu mo
-    hinh quan the (recompute_priors_fn), dung SCr gan Tobs cua CHINH block do -- khong ke thua Vd hau
-    nghiem cua block truoc (tranh troi dat khoi quan the goc).
-
-    (2) Cpred voi CL BAC THANG (xu ly AKI): CL_post cua lan TDM k la CL cua KHOANG THOI GIAN TU lan TDM
-    k-1 DEN lan TDM k (lan 1: tu lieu dau tien den TDM 1). Khi giai block k, cac doan truoc dung CL_post
-    CO DINH da uoc luong; chi doan (TDM k-1, TDM k] dung CL dang toi uu. Ranh gioi doan = thoi diem do
-    cua lan TDM truoc (KHONG phai thoi diem lay SCr -- SCr thuong lay cung luc mau dinh/day, neu lay
-    lam ranh gioi thi doan hien tai co do dai 0 va Cobs khong con tham gia uoc luong CL).
-
-    nearest_scr_fn(t_obs) -> scr_value (mg/dL), chi dung de tinh CL_prior.
-    Tra ve list AmgBayesResult -- phan tu CUOI la ket qua can hien thi/luu (yeu cau #4)."""
-    results = []
-    seg_start = min(d.given_at for d in doses)
-    historical_segments: List[Tuple[datetime.datetime, float]] = []
-    for block in blocks:
-        scr_i = nearest_scr_fn(block["measurements"][0].t_obs)
-        priors_i = recompute_priors_fn(scr_i)
-        res = solve_bayesian_posterior_amg(priors_i, doses, block["measurements"], sigma=sigma,
-                                            historical_cl_segments=historical_segments,
-                                            current_segment_start=seg_start)
-        res.anchor_dose = block["anchor_dose"]
-        results.append(res)
-        if not res.success:
-            break
-        historical_segments = historical_segments + [(seg_start, res.CL_optimized)]
-        seg_start = max(m.t_obs for m in block["measurements"])
-    return results
 
 # ==========================================
-# 6. Cpeak/Ctrough HIEN TAI (trang thai on dinh cua lieu+tau dang dung) + mo phong duong cong
+# 8. Cpeak/Ctrough TRANG THAI ON DINH CUA CHE DO LIEU (du doan lieu moi)
 # ==========================================
 
 def compute_css_peak_trough_amg(dose_mg: float, tau_h: float, tinf_h: float, cl: float, vd: float):
-    """Cpeak/Ctrough O TRANG THAI ON DINH (steady state) voi lieu+tau DANG DUNG -- cong thuc
-    F15/F16 (hoac F18/F19 khi chinh lieu) cua Excel."""
+    """Cpeak/Ctrough o trang thai on dinh voi lieu+tau+Tinf cho truoc va CL, V CO DINH (CL hien tai)."""
     ke = cl / vd if vd > 0 else 0.0
     if ke <= 0 or tau_h <= 0 or tinf_h <= 0 or cl <= 0:
         return 0.0, 0.0
     cpeak = ((dose_mg / (tinf_h * cl)) * (1 - np.exp(-ke * tinf_h))) / (1 - np.exp(-ke * tau_h))
     ctrough = cpeak * np.exp(-ke * (tau_h - tinf_h))
     return float(cpeak), float(ctrough)
-
-
-def simulate_concentration_curve_amg(cl: float, vd: float, doses: List[AmgDose], t_inf_h: float,
-                                      t_end: datetime.datetime, n_points: int = 300):
-    """Mo phong duong cong nong do theo thoi gian -- dung cho bieu do (Muc 7, giong Vancomycin)."""
-    if not doses:
-        return [], []
-    t_start = min(d.given_at for d in doses)
-    total_h = (t_end - t_start).total_seconds() / 3600.0
-    if total_h <= 0:
-        return [], []
-    times_h = np.linspace(0, total_h, n_points)
-    times_abs = [t_start + datetime.timedelta(hours=float(h)) for h in times_h]
-    concs = [compute_cpred_amg(cl, vd, doses, t, t_inf_h) for t in times_abs]
-    return times_abs, concs
-
-
-# ==========================================
-# 7. Cpred VOI CL BAC THANG THEO THOI GIAN (xu ly AKI / suy than cap trong lich su lieu)
-#    Da kiem dinh: khop compute_cpred_amg() khi CL khong doi (sai so 0) va khop loi giai ODE
-#    (scipy solve_ivp) toi ~1e-9 khi CL doi bac thang.
-# ==========================================
-
-def _segment_transition_1c(a0: float, cl: float, vd: float, rate_mg_per_h: float, dt_h: float) -> float:
-    """Chuyen luong thuoc A (1 ngan) qua dt_h voi CL/Vd co dinh va toc do truyen rate khong doi:
-    nghiem dong cua dA/dt = rate - k*A :  A(t+dt) = A0*e^(-k*dt) + (rate/k)*(1 - e^(-k*dt))."""
-    k = cl / vd if vd > 0 else 0.0
-    if k <= 0:
-        return a0 + rate_mg_per_h * dt_h
-    decay = np.exp(-k * dt_h)
-    if rate_mg_per_h:
-        return a0 * decay + (rate_mg_per_h / k) * (1 - decay)
-    return a0 * decay
-
-
-def compute_cpred_amg_piecewise(cl_segments: List[Tuple[datetime.datetime, float]], vd: float,
-                                 doses: List[AmgDose], t_obs: datetime.datetime,
-                                 t_inf_h: float) -> float:
-    """Nong do du doan tai t_obs khi CL THAY DOI THEO THOI GIAN (vd AKI): tong quat hoa
-    compute_cpred_amg(). cl_segments: list (thoi_diem_bat_dau_hieu_luc, CL) -- CL co hieu luc tu thoi
-    diem do cho toi doan ke tiep (hoac toi t_obs). Vd giu co dinh. Moc truoc doan dau tien dung CL cua
-    doan dau tien. Voi 1 doan duy nhat cho ket qua trung compute_cpred_amg()."""
-    if not cl_segments or not doses:
-        return 0.0
-    cl_segments = sorted(cl_segments, key=lambda s: s[0])
-    doses_sorted = sorted(doses, key=lambda d: d.given_at)
-
-    def cl_at(t: datetime.datetime) -> float:
-        cl = cl_segments[0][1]
-        for t_start, c_ in cl_segments:
-            if t_start <= t:
-                cl = c_
-        return cl
-
-    t_start_all = min(cl_segments[0][0], doses_sorted[0].given_at)
-    if t_obs <= t_start_all:
-        return 0.0
-    breakpoints = {t_start_all, t_obs}
-    for d in doses_sorted:
-        if t_start_all <= d.given_at <= t_obs:
-            breakpoints.add(d.given_at)
-            breakpoints.add(d.given_at + datetime.timedelta(hours=t_inf_h))
-    for t_start, _ in cl_segments:
-        if t_start_all <= t_start <= t_obs:
-            breakpoints.add(t_start)
-    bps = sorted(t for t in breakpoints if t_start_all <= t <= t_obs)
-
-    a = 0.0
-    for i in range(len(bps) - 1):
-        seg_start, seg_end = bps[i], bps[i + 1]
-        dt_h = (seg_end - seg_start).total_seconds() / 3600.0
-        if dt_h <= 1e-12:
-            continue
-        rate = 0.0
-        for d in doses_sorted:
-            if d.given_at <= seg_start < d.given_at + datetime.timedelta(hours=t_inf_h):
-                rate += d.dose_mg / t_inf_h
-        a = _segment_transition_1c(a, cl_at(seg_start), vd, rate, dt_h)
-    return a / vd
-
-
-def build_cl_segments_from_results_amg(block_results, doses: List[AmgDose]) -> List[Tuple[datetime.datetime, float]]:
-    """Dung danh sach doan CL (thoi_diem_bat_dau, CL) tu KET QUA cac lan TDM da giai: doan 1 bat dau tu
-    lieu dau tien voi CL_post lan 1; doan k bat dau tai thoi diem do cua lan TDM k-1 voi CL_post lan k.
-    Doan cuoi (CL_post moi nhat) keo dai ve sau -- dung cho do thi nhat quan voi cach tinh OFV."""
-    if not doses:
-        return []
-    segs: List[Tuple[datetime.datetime, float]] = []
-    seg_start = min(d.given_at for d in doses)
-    for r in block_results:
-        if not getattr(r, "points", None):
-            continue
-        segs.append((seg_start, r.CL_optimized))
-        seg_start = max(p["t_obs"] for p in r.points)
-    return segs
-
-
-def simulate_concentration_curve_amg_piecewise(cl_segments, vd: float, doses: List[AmgDose], t_inf_h: float,
-                                                t_end: datetime.datetime, n_points: int = 300):
-    """Giong simulate_concentration_curve_amg() nhung CL thay doi theo tung doan -- duong cong di qua
-    dung cac Cobs cua tung lan TDM."""
-    if not doses or not cl_segments:
-        return [], []
-    t_start = min(d.given_at for d in doses)
-    total_h = (t_end - t_start).total_seconds() / 3600.0
-    if total_h <= 0:
-        return [], []
-    times_abs = [t_start + datetime.timedelta(hours=float(h)) for h in np.linspace(0, total_h, n_points)]
-    concs = [compute_cpred_amg_piecewise(cl_segments, vd, doses, t, t_inf_h) for t in times_abs]
-    return times_abs, concs

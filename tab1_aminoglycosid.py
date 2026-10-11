@@ -27,10 +27,9 @@ from ui_common import (
 )
 from amg_bayesian_calculations import (
     AmgPatientInfo, AmgDose, AmgMeasurement,
-    compute_population_priors_amg, group_measurements_by_dose_block_amg,
-    solve_bayesian_sequential_amg, find_nearest_scr_amg, recompute_full_priors_amg,
-    compute_css_peak_trough_amg, simulate_concentration_curve_amg_piecewise,
-    build_cl_segments_from_results_amg,
+    scr_to_mgdl, solve_bayesian_joint_amg, assign_measurements_amg,
+    check_model_applicability_amg, compute_css_peak_trough_amg,
+    simulate_concentration_curve_amg_tv,
 )
 def parse_amg_dt(value, default=None):
     """Parse chuỗi 'YYYY-MM-DD HH:MM' thành datetime.datetime. Lỗi -> default hoặc hiện tại."""
@@ -80,40 +79,69 @@ class AmgDateTimePickerWindow(ctk.CTkToplevel):
             self.destroy()
         except Exception as e:
             messagebox.showerror("Lỗi", f"Định dạng ngày giờ không hợp lệ: {e}")
+def parse_amg_dt_strict(value):
+    """Như parse_amg_dt nhưng KHÔNG tự thay bằng giờ hiện tại khi sai định dạng: trả về None."""
+    value = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.datetime.strptime(value, fmt)
+        except Exception:
+            continue
+    return None
 class AmgDoseRow(ctk.CTkFrame):
-    """Một dòng liều dùng: Liều (mg) + τ (h) + Thời điểm bắt đầu + nút thêm liều tự động."""
+    """Một liều: Liều thứ n — thời gian bắt đầu — liều (mg) — thời gian truyền Tinf (h).
+    τ (h) là khoảng đưa liều, CHỈ dùng cho nút '➕ Tự động' (tự thêm liều kế tiếp) và cho Cpeak/Ctrough hiện tại."""
     def __init__(self, master, on_remove, on_auto_add, dose_default=400.0, tau_default=24.0,
-                 dt_default=None, **kwargs):
+                 dt_default=None, tinf_default=1.0, **kwargs):
         super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
         dt_default = dt_default or datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
         self.on_auto_add_callback = on_auto_add
-        self.dose_var = ctk.StringVar(value=str(dose_default))
-        self.tau_var = ctk.StringVar(value=str(tau_default))
+        self.dose_var = ctk.StringVar(value=f"{dose_default:g}")
+        self.tau_var = ctk.StringVar(value=f"{tau_default:g}")
+        self.tinf_var = ctk.StringVar(value=f"{tinf_default:g}")
         self.dt_var = ctk.StringVar(value=dt_default.strftime("%Y-%m-%d %H:%M"))
         grid = ctk.CTkFrame(self, fg_color="transparent")
         grid.pack(fill="x", padx=8, pady=6)
-        self.seq_label = ctk.CTkLabel(grid, text="1.", font=FONT_SMALL, width=25, anchor="e")
+        self.seq_label = ctk.CTkLabel(grid, text="Liều thứ 1:", font=FONT_SMALL, width=70, anchor="w")
         self.seq_label.pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(grid, text="Liều (mg):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(grid, textvariable=self.dose_var, width=65).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(grid, text="τ (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(grid, textvariable=self.tau_var, width=45).pack(side="left", padx=(0, 8))
         ctk.CTkLabel(grid, text="Bắt đầu:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
         ctk.CTkEntry(grid, textvariable=self.dt_var, width=130).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(grid, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(grid, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(grid, text="Liều (mg):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(grid, textvariable=self.dose_var, width=65).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(grid, text="Tinf (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(grid, textvariable=self.tinf_var, width=45).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(grid, text="τ (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(grid, textvariable=self.tau_var, width=45).pack(side="left", padx=(0, 8))
         ctk.CTkButton(grid, text="➕ Tự động", width=75, fg_color="#1f6feb", hover_color="#1158c7",
                       command=lambda: self.on_auto_add_callback(self)).pack(side="left", padx=(0, 6))
         ctk.CTkButton(grid, text="🗑", width=32, fg_color="#d1242f", hover_color="#a01c24",
                       command=lambda: on_remove(self)).pack(side="left")
     def set_seq(self, num):
-        self.seq_label.configure(text=f"Liều {num}:")
+        self.seq_label.configure(text=f"Liều thứ {num}:")
     def open_calendar(self):
         AmgDateTimePickerWindow(self, initial_dt=parse_amg_dt(self.dt_var.get()),
                                  callback=lambda dt: self.dt_var.set(dt.strftime("%Y-%m-%d %H:%M")))
     def get_dose(self):
-        return AmgDose(dose_mg=parse_float(self.dose_var.get(), 0.0), given_at=parse_amg_dt(self.dt_var.get()))
+        """Trả về AmgDose; dữ liệu sai -> ValueError (KHÔNG tự thay bằng giờ hiện tại)."""
+        t0 = parse_amg_dt_strict(self.dt_var.get())
+        if t0 is None:
+            raise ValueError("thời điểm bắt đầu sai định dạng (YYYY-MM-DD HH:MM)")
+        dose = _to_float(self.dose_var.get())
+        if dose is None or dose <= 0:
+            raise ValueError("liều (mg) phải là số > 0")
+        tinf = _to_float(self.tinf_var.get())
+        if tinf is None or tinf <= 0:
+            raise ValueError("thời gian truyền Tinf (h) phải là số > 0")
+        return AmgDose(dose_mg=dose, given_at=t0, t_inf_h=tinf)
+    def try_dose(self):
+        try:
+            return self.get_dose()
+        except ValueError:
+            return None
     def get_tau(self):
-        return parse_float(self.tau_var.get(), 24.0)
+        v = _to_float(self.tau_var.get())
+        return v if v and v > 0 else 24.0
 class AmgScrRow(ctk.CTkFrame):
     """Một dòng nhập SCr: Giá trị SCr + ĐƠN VỊ (μmol/L hoặc mg/dL, người dùng tự chọn) +
     Thời điểm đo + nút xóa (hỗ trợ nhiều lần đo SCr)."""
@@ -137,24 +165,29 @@ class AmgScrRow(ctk.CTkFrame):
     def open_calendar(self):
         AmgDateTimePickerWindow(self, initial_dt=parse_amg_dt(self.dt_var.get()),
                                  callback=lambda dt: self.dt_var.set(dt.strftime("%Y-%m-%d %H:%M")))
-    def get_scr(self):
-        """Trả về (SCr ĐÃ QUY ĐỔI mg/dL theo đơn vị người dùng chọn, thời điểm đo) — dùng
-        trực tiếp cho tính toán, KHÔNG còn tự đoán đơn vị theo ngưỡng >10 nữa."""
-        raw = parse_float(self.scr_var.get(), 0.0)
-        scr_mgdl = raw / 88.4 if self.unit_var.get() == "μmol/L" else raw
-        return scr_mgdl, parse_amg_dt(self.dt_var.get())
     def get_raw(self):
-        """Trả về (giá trị SCr GỐC người dùng nhập, đơn vị đã chọn, thời điểm đo) — dùng khi
-        lưu/tải lại để hiển thị đúng như người dùng đã nhập, không hiển thị số đã quy đổi."""
-        return parse_float(self.scr_var.get(), 0.0), self.unit_var.get(), parse_amg_dt(self.dt_var.get())
+        """(giá trị SCr GỐC người dùng nhập, đơn vị đã chọn, thời điểm đo) — dùng khi lưu/tải lại.
+        Dữ liệu sai -> ValueError."""
+        t0 = parse_amg_dt_strict(self.dt_var.get())
+        if t0 is None:
+            raise ValueError("thời điểm đo sai định dạng (YYYY-MM-DD HH:MM)")
+        raw = _to_float(self.scr_var.get())
+        if raw is None or raw <= 0:
+            raise ValueError("giá trị SCr phải là số > 0")
+        return raw, self.unit_var.get(), t0
+    def get_scr(self):
+        """(SCr đã quy đổi mg/dL, thời điểm đo). Quy đổi theo đơn vị người dùng chọn, ĐÚNG 1 LẦN tại đây
+        (scr_to_mgdl) — mọi hàm tính toán phía sau nhận SCr đã là mg/dL, không quy đổi lại."""
+        raw, unit, t0 = self.get_raw()
+        return scr_to_mgdl(raw, unit), t0
 class AmgMeasRow(ctk.CTkFrame):
-    """Một dòng điểm đo: Cobs + Tobs + Tinf + nút xóa (hỗ trợ nhiều điểm đo)."""
-    def __init__(self, master, on_remove, cobs_default=8.0, tinf_default=1.0, dt_default=None, **kwargs):
+    """Một điểm đo: Cobs + Tobs. Phần mềm TỰ xác định mẫu thuộc liều thứ mấy (nhãn bên phải, cập nhật
+    sau khi chạy). Thời gian truyền lấy từ liều tương ứng trong bảng liều."""
+    def __init__(self, master, on_remove, cobs_default=8.0, dt_default=None, **kwargs):
         super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
         dt_default = dt_default or datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
         self.cobs_var = ctk.StringVar(value=str(cobs_default))
         self.dt_var = ctk.StringVar(value=dt_default.strftime("%Y-%m-%d %H:%M"))
-        self.tinf_var = ctk.StringVar(value=str(tinf_default))
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=8, pady=6)
         ctk.CTkLabel(row, text="Cobs (μg/mL):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
@@ -162,17 +195,23 @@ class AmgMeasRow(ctk.CTkFrame):
         ctk.CTkLabel(row, text="Tobs:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
         ctk.CTkEntry(row, textvariable=self.dt_var, width=130).pack(side="left", padx=(0, 4))
         ctk.CTkButton(row, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(row, text="Tinf (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(row, textvariable=self.tinf_var, width=45).pack(side="left", padx=(0, 8))
         ctk.CTkButton(row, text="🗑", width=32, fg_color="#d1242f", hover_color="#a01c24",
-                      command=lambda: on_remove(self)).pack(side="left")
+                      command=lambda: on_remove(self)).pack(side="left", padx=(0, 8))
+        self.assign_label = ctk.CTkLabel(row, text="", font=FONT_SMALL, text_color=("gray40", "gray70"))
+        self.assign_label.pack(side="left")
     def open_calendar(self):
         AmgDateTimePickerWindow(self, initial_dt=parse_amg_dt(self.dt_var.get()),
                                  callback=lambda dt: self.dt_var.set(dt.strftime("%Y-%m-%d %H:%M")))
+    def set_assignment(self, text, warn=False):
+        self.assign_label.configure(text=text, text_color=("#9a6700", "#d29922") if warn else ("gray40", "gray70"))
     def get_measurement(self):
-        return AmgMeasurement(c_obs=parse_float(self.cobs_var.get(), 0.0),
-                               t_obs=parse_amg_dt(self.dt_var.get()),
-                               t_inf_h=parse_float(self.tinf_var.get(), 1.0))
+        t0 = parse_amg_dt_strict(self.dt_var.get())
+        if t0 is None:
+            raise ValueError("Tobs sai định dạng (YYYY-MM-DD HH:MM)")
+        c = _to_float(self.cobs_var.get())
+        if c is None or c <= 0:
+            raise ValueError("Cobs phải là số > 0")
+        return AmgMeasurement(c_obs=c, t_obs=t0)
 class AmgNewDoseRow(ctk.CTkFrame):
     """Một tổ hợp (liều mới - τ mới - Tinf mới) để xem trước Cpeak/Ctrough dự đoán ở trạng
     thái ổn định, dựa trên CLpost/Vdpost/Ke vừa tối ưu Bayesian — tương đương các ô
@@ -344,7 +383,6 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         self.amg_newdose_rows = []
         self.amg_priors = None
         self.amg_bayes_result = None
-        self.amg_block_results = []
         self.amg_chart_canvas = None
         self.bayes_container = ctk.CTkFrame(self, fg_color="transparent")
         self._build_amg_bayesian_sections()
@@ -453,6 +491,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             widget.var.trace_add("write", lambda *a: self.recalc_population())
         for widget in (self.gender_opt, self.drug_opt, self.severity_opt):
             widget.var.trace_add("write", lambda *a: self.recalc_population())
+        self.drug_opt.var.trace_add("write", lambda *a: self._update_amg_drug_note())
     # ---------------------------------------------------------------
     def _build_section2_population(self):
         self._section_header("2. Thông số quần thể tham khảo", parent=self.sz_container)
@@ -1086,7 +1125,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                            width=210).pack(side="left")
         self.amg_model_note = ctk.CTkLabel(
             self, text="(Các mô hình Bayesian khác sẽ được cập nhật sau)", font=FONT_SMALL,
-            text_color=("gray45", "gray65"))
+            text_color=("gray45", "gray65"), wraplength=900, justify="left")
         self.amg_method_separator = ttk.Separator(self, orient="horizontal")
         self.amg_method_separator.pack(fill="x", padx=6, pady=(4, 4))
     def on_amg_method_change(self, choice=None):
@@ -1094,6 +1133,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             self.sz_container.pack_forget()
             self.amg_model_row.pack(fill="x", padx=6, pady=(0, 4), before=self.amg_method_separator)
             self.amg_model_note.pack(anchor="w", padx=6, pady=(0, 8), before=self.amg_method_separator)
+            self._update_amg_drug_note()
             self.bayes_container.pack(fill="x")
         else:
             self.bayes_container.pack_forget()
@@ -1112,8 +1152,10 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         p = self.bayes_container
         ctk.CTkLabel(p, text="💊 TDM Bayesian — Mô hình Aréchiga-Alvarado 2020 (1 ngăn)", font=FONT_H2
                      ).pack(anchor="w", padx=6, pady=(6, 4))
-        ctk.CTkLabel(p, text="Dùng chung Tuổi/Giới/Cân nặng/Chiều cao ở Mục 1 phía trên.",
-                     font=FONT_SMALL, text_color=("gray40", "gray70")).pack(anchor="w", padx=6, pady=(0, 10))
+        ctk.CTkLabel(p, text="Dùng chung Tuổi/Giới/Cân nặng/Chiều cao ở Mục 1 phía trên. Mô hình chỉ dành cho AMIKACIN; "
+                             "khớp chung tất cả các mẫu với CrCl biến thiên theo SCr.",
+                     font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left"
+                     ).pack(anchor="w", padx=6, pady=(0, 10))
         # --- B. Nhiều lần đo SCr ---
         ctk.CTkLabel(p, text="B. Các lần đo SCr", font=FONT_SMALL, text_color=("gray30", "gray80")
                      ).pack(anchor="w", padx=6, pady=(4, 4))
@@ -1125,8 +1167,12 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                       command=lambda: self._add_amg_scr_row()).pack(anchor="w", padx=6, pady=(6, 4))
         ttk.Separator(p, orient="horizontal").pack(fill="x", padx=6, pady=14)
         # --- C. Lịch sử liều dùng ---
-        ctk.CTkLabel(p, text="C. Lịch sử liều dùng (Truyền TM)", font=FONT_SMALL, text_color=("gray30", "gray80")
-                     ).pack(anchor="w", padx=6, pady=(4, 4))
+        ctk.CTkLabel(p, text="C. Lịch sử liều dùng (Truyền TM) — mỗi liều có thời gian truyền Tinf riêng",
+                     font=FONT_SMALL, text_color=("gray30", "gray80")).pack(anchor="w", padx=6, pady=(4, 2))
+        ctk.CTkLabel(p, text="Nhập đầy đủ các liều trước thời điểm lấy mẫu (mô hình giả định biết toàn bộ lịch sử liều). "
+                             "τ chỉ dùng cho nút '➕ Tự động' và tính Cpeak/Ctrough hiện tại.",
+                     font=FONT_SMALL, text_color=("gray45", "gray65"), wraplength=900, justify="left"
+                     ).pack(anchor="w", padx=6, pady=(0, 4))
         self.amg_doses_container = ctk.CTkFrame(p, fg_color="transparent")
         self.amg_doses_container.pack(fill="x", padx=6)
         ctk.CTkButton(p, text="➕ Thêm liều thủ công", height=30, width=150,
@@ -1134,7 +1180,9 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         ttk.Separator(p, orient="horizontal").pack(fill="x", padx=6, pady=14)
         # --- D. Nhiều điểm đo Cobs ---
         ctk.CTkLabel(p, text="D. Nồng độ đo được (nhiều điểm)", font=FONT_SMALL, text_color=("gray30", "gray80")
-                     ).pack(anchor="w", padx=6, pady=(4, 4))
+                     ).pack(anchor="w", padx=6, pady=(4, 2))
+        ctk.CTkLabel(p, text="Chỉ nhập Cobs và thời điểm lấy mẫu — phần mềm tự xác định mẫu thuộc liều thứ mấy.",
+                     font=FONT_SMALL, text_color=("gray45", "gray65")).pack(anchor="w", padx=6, pady=(0, 4))
         self.amg_meas_container = ctk.CTkFrame(p, fg_color="transparent")
         self.amg_meas_container.pack(fill="x", padx=6)
         ctk.CTkButton(p, text="➕ Thêm điểm đo", height=30, width=140,
@@ -1147,6 +1195,14 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                       command=self.run_amg_bayes_solve).pack(fill="x", padx=6, pady=(0, 6))
         self.amg_solve_status = StatusLabel(p)
         self.amg_solve_status.pack(fill="x", padx=6)
+        self.amg_warn_label = ctk.CTkLabel(p, text="", font=FONT_SMALL, justify="left", anchor="w", wraplength=900)
+        self.amg_warn_label.pack(fill="x", padx=10, pady=(4, 0))
+        self.amg_eta_label = ctk.CTkLabel(p, text="", font=FONT_SMALL, justify="left", anchor="w", wraplength=900,
+                                          text_color=("gray30", "gray75"))
+        self.amg_eta_label.pack(fill="x", padx=10, pady=(4, 0))
+        self.amg_points_label = ctk.CTkLabel(p, text="", font=FONT_SMALL, justify="left", anchor="w", wraplength=900,
+                                             text_color=("gray30", "gray75"))
+        self.amg_points_label.pack(fill="x", padx=10, pady=(2, 0))
         row = ctk.CTkFrame(p, fg_color="transparent")
         row.pack(fill="x", padx=6, pady=(8, 0))
         row.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="ares")
@@ -1227,125 +1283,197 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             self.amg_scr_rows.remove(row)
         row.destroy()
     def _get_amg_scr_entries(self):
-        entries = [r.get_scr() for r in self.amg_scr_rows]
+        entries = []
+        for i, r in enumerate(self.amg_scr_rows):
+            try:
+                entries.append(r.get_scr())
+            except ValueError as e:
+                raise ValueError(f"Lần đo SCr thứ {i + 1}: {e}.")
         entries.sort(key=lambda e: e[1])
         return entries
     def _get_amg_representative_scr(self):
         entries = self._get_amg_scr_entries()
-        return entries[-1][0] if entries else 80.0
+        if not entries:
+            raise ValueError("Chưa có lần đo SCr nào ở Mục B.")
+        return entries[-1][0]
     # --- Quản lý dòng liều ---
+    def _repack_amg_dose_rows(self):
+        """Sắp các dòng liều theo thời điểm bắt đầu (dòng sai định dạng để cuối) rồi đánh số lại."""
+        far = datetime.datetime.max
+        def key(r):
+            d = r.try_dose()
+            t0 = d.given_at if d else parse_amg_dt_strict(r.dt_var.get())
+            return t0 or far
+        self.amg_dose_rows.sort(key=key)
+        for r in self.amg_dose_rows:
+            r.pack_forget()
+        for i, r in enumerate(self.amg_dose_rows):
+            r.pack(fill="x", pady=3)
+            r.set_seq(i + 1)
     def _renumber_amg_doses(self):
-        for i, row in enumerate(self.amg_dose_rows):
-            row.set_seq(i + 1)
-    def _add_amg_dose_row(self, dose_default=400.0, tau_default=24.0, dt_default=None):
+        self._repack_amg_dose_rows()
+    def _add_amg_dose_row(self, dose_default=400.0, tau_default=24.0, dt_default=None, tinf_default=1.0):
         if dt_default is None:
-            if self.amg_dose_rows:
-                last_r = self.amg_dose_rows[-1]
-                dt_default = last_r.get_dose().given_at + datetime.timedelta(hours=last_r.get_tau())
+            last = self.amg_dose_rows[-1].try_dose() if self.amg_dose_rows else None
+            if last is not None:
+                dt_default = last.given_at + datetime.timedelta(hours=self.amg_dose_rows[-1].get_tau())
             else:
                 dt_default = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
         row = AmgDoseRow(self.amg_doses_container, on_remove=self._remove_amg_dose_row,
-                          on_auto_add=self._auto_add_amg_dose_row,
-                          dose_default=dose_default, tau_default=tau_default, dt_default=dt_default)
-        row.pack(fill="x", pady=3)
+                          on_auto_add=self._auto_add_amg_dose_row, dose_default=dose_default,
+                          tau_default=tau_default, dt_default=dt_default, tinf_default=tinf_default)
         self.amg_dose_rows.append(row)
         self._renumber_amg_doses()
-    def _insert_amg_dose_row(self, dose_default, tau_default, dt_default, index):
-        row = AmgDoseRow(self.amg_doses_container, on_remove=self._remove_amg_dose_row,
-                          on_auto_add=self._auto_add_amg_dose_row,
-                          dose_default=dose_default, tau_default=tau_default, dt_default=dt_default)
-        row.pack(fill="x", pady=3)
-        self.amg_dose_rows.insert(index, row)
-        self._renumber_amg_doses()
     def _auto_add_amg_dose_row(self, current_row):
-        try:
-            idx = self.amg_dose_rows.index(current_row)
-            cur_dose = current_row.get_dose()
-            cur_tau = current_row.get_tau()
-            self._insert_amg_dose_row(cur_dose.dose_mg, cur_tau,
-                                       cur_dose.given_at + datetime.timedelta(hours=cur_tau), idx + 1)
-        except Exception:
-            self._add_amg_dose_row()
+        cur = current_row.try_dose()
+        if cur is None:
+            self.amg_solve_status.show("⚠️ Liều dùng để nhân bản chưa hợp lệ — hãy kiểm tra thời điểm/liều/Tinf của dòng đó.", "warning")
+            return
+        tau = current_row.get_tau()
+        self._add_amg_dose_row(dose_default=cur.dose_mg, tau_default=tau,
+                                dt_default=cur.given_at + datetime.timedelta(hours=tau), tinf_default=cur.t_inf_h)
     def _remove_amg_dose_row(self, row):
         if row in self.amg_dose_rows:
             self.amg_dose_rows.remove(row)
         row.destroy()
         self._renumber_amg_doses()
     def _get_amg_doses(self):
-        doses = [r.get_dose() for r in self.amg_dose_rows]
+        self._repack_amg_dose_rows()
+        doses = []
+        for i, r in enumerate(self.amg_dose_rows):
+            try:
+                doses.append(r.get_dose())
+            except ValueError as e:
+                raise ValueError(f"Liều thứ {i + 1}: {e}.")
         doses.sort(key=lambda d: d.given_at)
         return doses
     def _find_amg_dose_row_for(self, dose):
         if dose is None:
             return None
         for r in self.amg_dose_rows:
-            if r.get_dose().given_at == dose.given_at:
+            d = r.try_dose()
+            if d is not None and d.given_at == dose.given_at:
                 return r
         return None
     # --- Quản lý dòng điểm đo ---
-    def _add_amg_meas_row(self, cobs_default=8.0, tinf_default=1.0, dt_default=None):
+    def _add_amg_meas_row(self, cobs_default=8.0, dt_default=None):
         row = AmgMeasRow(self.amg_meas_container, on_remove=self._remove_amg_meas_row,
-                          cobs_default=cobs_default, tinf_default=tinf_default, dt_default=dt_default)
+                          cobs_default=cobs_default, dt_default=dt_default)
         row.pack(fill="x", pady=3)
         self.amg_meas_rows.append(row)
     def _remove_amg_meas_row(self, row):
         if row in self.amg_meas_rows:
             self.amg_meas_rows.remove(row)
         row.destroy()
+    def _get_amg_measurement_pairs(self):
+        """[(dòng, AmgMeasurement)] theo thứ tự dòng trên màn hình."""
+        pairs = []
+        for i, r in enumerate(self.amg_meas_rows):
+            try:
+                pairs.append((r, r.get_measurement()))
+            except ValueError as e:
+                raise ValueError(f"Điểm đo thứ {i + 1}: {e}.")
+        return pairs
     def _get_amg_measurements(self):
-        measurements = [r.get_measurement() for r in self.amg_meas_rows]
-        measurements.sort(key=lambda m: m.t_obs)
-        return measurements
-    # --- Chạy tối ưu Bayesian (nhiều điểm đo, gom theo khoảng đưa liều, giải tuần tự) ---
+        ms = [m for _, m in self._get_amg_measurement_pairs()]
+        ms.sort(key=lambda m: m.t_obs)
+        return ms
+    # --- Mô hình chỉ dành cho Amikacin ---
+    def _amg_drug_ok(self):
+        return "amikacin" in str(self.drug_opt.get()).lower()
+    def _update_amg_drug_note(self):
+        if not hasattr(self, "amg_model_note"):
+            return
+        if self._amg_drug_ok():
+            self.amg_model_note.configure(text="(Các mô hình Bayesian khác sẽ được cập nhật sau)",
+                                           text_color=("gray45", "gray65"))
+        else:
+            self.amg_model_note.configure(
+                text=f"⛔ Mô hình Aréchiga-Alvarado 2020 chỉ được xây dựng cho AMIKACIN — KHÔNG áp dụng cho "
+                     f"{self.drug_opt.get()}. Hãy chọn Amikacin ở Mục 1, hoặc dùng phương pháp Sawchuk–Zaske.",
+                text_color=("#cf222e", "#ff7b72"))
+    # --- Chạy tối ưu Bayesian (khớp chung mọi mẫu, CrCl biến thiên theo SCr) ---
     def run_amg_bayes_solve(self):
-        doses = self._get_amg_doses()
+        self.amg_warn_label.configure(text="")
+        self.amg_eta_label.configure(text="")
+        self.amg_points_label.configure(text="")
+        if not self._amg_drug_ok():
+            self.amg_bayes_result = None
+            self.amg_solve_status.show(
+                f"⛔ Mô hình Aréchiga-Alvarado 2020 chỉ xây dựng cho AMIKACIN — không áp dụng cho {self.drug_opt.get()}. "
+                "Hãy chọn Amikacin ở Mục 1 hoặc dùng phương pháp Sawchuk–Zaske.", "error")
+            return
+        try:
+            doses = self._get_amg_doses()
+            pairs = self._get_amg_measurement_pairs()
+            scr_entries = self._get_amg_scr_entries()
+            patient = self._get_amg_patient() if scr_entries else None
+        except ValueError as e:
+            self.amg_solve_status.show(f"⚠️ {e}", "warning")
+            return
         if not doses:
             self.amg_solve_status.show("⚠️ Vui lòng nhập ít nhất 1 liều ở Mục C.", "warning")
             return
-        measurements = self._get_amg_measurements()
-        if not measurements or any(m.c_obs <= 0 for m in measurements):
+        if not pairs:
             self.amg_solve_status.show("⚠️ Vui lòng nhập ít nhất 1 điểm đo hợp lệ (Cobs > 0) ở Mục D.", "warning")
             return
-        scr_entries = self._get_amg_scr_entries()
         if not scr_entries:
             self.amg_solve_status.show("⚠️ Vui lòng nhập ít nhất 1 lần đo SCr ở Mục B.", "warning")
             return
-        blocks, orphans = group_measurements_by_dose_block_amg(measurements, doses)
-        if not blocks:
-            self.amg_solve_status.show(
-                "⚠️ Không xác định được liều 'neo' cho (các) điểm đo — Tobs phải sau liều đầu tiên.", "warning")
-            return
-        patient = self._get_amg_patient()
-        self.amg_priors, _ = compute_population_priors_amg(patient)
-        # SỬA (2026-09): MỌI lần TDM (kể cả lần đầu) đều dùng tiền nghiệm CL/Vd tính lại hoàn
-        # toàn mới từ mô hình quần thể (không còn kế thừa Vd hậu nghiệm của lần trước) —
-        # tránh dữ liệu bệnh nhân trôi dạt khỏi quần thể tham khảo qua nhiều lần TDM liên tiếp.
-        block_results = solve_bayesian_sequential_amg(
-            doses, blocks,
-            lambda scr: recompute_full_priors_amg(patient, scr),
-            lambda t: find_nearest_scr_amg(scr_entries, t))
-        self.amg_block_results = block_results
-        result = block_results[-1] if block_results else None
+        measurements = [m for _, m in pairs]
+        # Gắn từng mẫu vào liều tương ứng (hiển thị trên từng dòng)
+        assigns = assign_measurements_amg(measurements, doses)
+        for (row, _), a in zip(pairs, assigns):
+            if a["dose_index"] is None:
+                row.set_assignment("⛔ trước liều đầu tiên — bỏ qua", warn=True)
+            elif a["in_infusion"]:
+                row.set_assignment(f"⚠️ thuộc liều thứ {a['dose_index'] + 1} — đang TRONG lúc truyền", warn=True)
+            else:
+                row.set_assignment(f"→ thuộc liều thứ {a['dose_index'] + 1}, {a['hours_after_end']:.2f} h sau khi kết thúc truyền")
+        # Cảnh báo phạm vi áp dụng của mô hình (chỉ cảnh báo, không chặn)
+        warns = check_model_applicability_amg(patient, scr_entries, doses, measurements)
+        if warns:
+            any_warn = any(lv == "warn" for lv, _ in warns)
+            self.amg_warn_label.configure(
+                text="\n".join(("⚠️ " if lv == "warn" else "ℹ️ ") + tx for lv, tx in warns),
+                text_color=("#9a6700", "#d29922") if any_warn else ("gray40", "gray70"))
+        result = solve_bayesian_joint_amg(patient, scr_entries, doses, measurements)
         self.amg_bayes_result = result
-        self.amg_measurement_used = blocks[-1]["measurements"] if blocks else []
-        self.amg_doses_used = doses
         if result is None or not result.success:
-            msg = result.message if result else "Không có block dữ liệu hợp lệ."
-            self.amg_solve_status.show(f"❌ {msg}", "error")
+            self.amg_solve_status.show(f"❌ {result.message if result else 'Không có dữ liệu hợp lệ.'}", "error")
             return
-        n_orphan = f" (bỏ qua {len(orphans)} điểm đo trước liều đầu tiên)" if orphans else ""
-        n_block = f" — đã chạy tuần tự qua {len(block_results)} lần TDM" if len(block_results) > 1 else ""
-        self.amg_solve_status.show(f"✅ {result.message}{n_block}{n_orphan}", "success")
+        self.amg_measurement_used = sorted([m for m in measurements if m.t_obs > doses[0].given_at],
+                                            key=lambda m: m.t_obs)
+        self.amg_doses_used = doses
+        self.amg_scr_used = scr_entries
+        self.amg_patient_used = patient
+        n_skip = len(measurements) - result.n_used
+        n_skip_txt = f" (bỏ qua {n_skip} điểm đo trước liều đầu tiên)" if n_skip else ""
+        scr_txt = (f"CrCl biến thiên theo {len(scr_entries)} lần đo SCr" if len(scr_entries) > 1
+                   else "SCr không đổi (1 lần đo)")
+        self.amg_solve_status.show(f"✅ {result.message} Khớp chung {result.n_used} điểm đo; {scr_txt}{n_skip_txt}.", "success")
         self.amg_card_cl.set_value(f"{result.CL_optimized:.4f}")
         self.amg_card_vd.set_value(f"{result.Vd_optimized:.2f}")
         self.amg_card_ke.set_value(f"{result.Ke:.4f}")
         self.amg_card_ofv.set_value(f"{result.OFV_final:.4f}")
+        self.amg_eta_label.configure(text=(
+            f"CrCl hiện tại = {result.crcl_current:.0f} mL/phút → CL quần thể = {result.cl_pop_current:.3f} L/h; "
+            f"η_CL = {result.eta_cl * 100:+.1f}% → CL hiện tại = {result.CL_optimized:.3f} L/h.   "
+            f"V quần thể = {result.vd_pop:.2f} L; η_V = {result.eta_vd * 100:+.1f}% → V = {result.Vd_optimized:.2f} L.   "
+            f"(OFV: tiên nghiệm {result.ofv_prior:.3f} + quan sát {result.ofv_obs:.3f})"))
+        lines = []
+        for i, pt in enumerate(result.points):
+            n = (pt["dose_index"] + 1) if pt["dose_index"] is not None else "?"
+            when = ("TRONG lúc truyền" if pt["in_infusion"] else f"{pt['hours_after_end']:.2f} h sau khi kết thúc truyền")
+            lines.append(f"• Mẫu {i + 1}: {pt['t_obs']:%d/%m %H:%M} (liều thứ {n}, {when}): "
+                         f"Cobs = {pt['c_obs']:g}, Cpred = {pt['c_pred']:.2f} μg/mL")
+        self.amg_points_label.configure(text="\n".join(lines))
         anchor_row = self._find_amg_dose_row_for(result.anchor_dose) or (
-            max(self.amg_dose_rows, key=lambda r: r.get_dose().given_at) if self.amg_dose_rows else None)
-        if anchor_row is not None:
+            self.amg_dose_rows[-1] if self.amg_dose_rows else None)
+        if anchor_row is not None and result.anchor_dose is not None:
             tau_used = anchor_row.get_tau()
-            dose_used = anchor_row.get_dose().dose_mg
-            tinf_used = self.amg_measurement_used[0].t_inf_h if self.amg_measurement_used else 1.0
+            dose_used = result.anchor_dose.dose_mg
+            tinf_used = result.anchor_dose.t_inf_h
             cpeak, ctrough = compute_css_peak_trough_amg(dose_used, tau_used, tinf_used,
                                                            result.CL_optimized, result.Vd_optimized)
             self.amg_card_cpeak.set_value(f"{cpeak:.2f}")
@@ -1354,8 +1482,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             self.amg_card_tau_used.set_value(f"{tau_used:g}")
             self._amg_last_dose_used, self._amg_last_tau_used = dose_used, tau_used
             self._amg_last_cpeak, self._amg_last_ctrough = cpeak, ctrough
-            # Gợi ý sẵn 1 tổ hợp liều mới (bằng liều/τ đang dùng) để người dùng chỉnh tiếp — chỉ thêm
-            # nếu Mục E2 đang trống, không ghi đè các tổ hợp người dùng đã tự nhập trước đó
+            # Gợi ý sẵn 1 tổ hợp liều mới (bằng liều/τ/Tinf đang dùng) — chỉ thêm nếu Mục E2 đang trống
             if not self.amg_newdose_rows:
                 new_row = self._add_amg_newdose_row(dose_default=dose_used, tau_default=tau_used, tinf_default=tinf_used)
                 self._compute_amg_newdose_row(new_row)
@@ -1365,15 +1492,10 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         if r is None or not r.success:
             return
         meas_list = self.amg_measurement_used or []
-        t_inf = meas_list[0].t_inf_h if meas_list else 1.0
         t_end = (max(m.t_obs for m in meas_list) if meas_list else datetime.datetime.now()) + datetime.timedelta(hours=12)
-        # CL BẬC THANG theo từng lần TDM đã giải (CL_post của lần k áp dụng cho khoảng từ lần TDM k-1
-        # đến lần TDM k) — nhất quán với cách tính OFV, nên đường cong đi qua đúng các Cobs của mọi lần TDM
-        # (xử lý thận suy cấp/AKI giữa các lần TDM).
-        cl_segments = build_cl_segments_from_results_amg(self.amg_block_results, self.amg_doses_used) or [
-            (min(d.given_at for d in self.amg_doses_used), r.CL_optimized)]
-        times, concs = simulate_concentration_curve_amg_piecewise(cl_segments, r.Vd_optimized, self.amg_doses_used,
-                                                                    t_inf, t_end=t_end)
+        # CL(t) biến thiên theo SCr(t); đường cong đi qua các Cobs theo đúng mô hình đã khớp
+        times, concs = simulate_concentration_curve_amg_tv(
+            self.amg_patient_used, self.amg_scr_used, self.amg_doses_used, r.eta_cl, r.Vd_optimized, t_end=t_end)
         if self.amg_chart_canvas is None:
             self.amg_chart_placeholder.pack_forget()
             fig = Figure(figsize=(7.5, 4.2), dpi=100)
@@ -1384,12 +1506,8 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         ax.clear()
         if times:
             ax.plot(times, concs, color="#8250df", linewidth=2, label="Nồng độ dự đoán C(t) hậu nghiệm")
-        # Cobs của TẤT CẢ các lần TDM (không chỉ lần cuối) để đối chiếu với đường cong CL bậc thang
-        all_pts = [(p["t_obs"], p["c_obs"]) for r_ in (self.amg_block_results or []) for p in (r_.points or [])]
-        if not all_pts:
-            all_pts = [(m.t_obs, m.c_obs) for m in meas_list]
-        if all_pts:
-            ax.scatter([t for t, _ in all_pts], [v for _, v in all_pts],
+        if meas_list:
+            ax.scatter([m.t_obs for m in meas_list], [m.c_obs for m in meas_list],
                        color="#d1242f", zorder=5, label="Cobs đo được")
         ax.set_xlabel("Thời gian")
         ax.set_ylabel("Nồng độ (μg/mL)")
@@ -1433,16 +1551,28 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         if self.amg_bayes_result is None or not self.amg_bayes_result.success:
             self.amg_save_status.show("⚠️ Vui lòng chạy tối ưu Bayesian trước khi lưu.", "warning")
             return
-        patient = self._get_amg_patient()
+        try:
+            patient = self._get_amg_patient()
+            doses_now = self._get_amg_doses()
+            scr_raw_now = [row.get_raw() for row in self.amg_scr_rows]
+            meas_now = self._get_amg_measurements()
+        except ValueError as e:
+            self.amg_save_status.show(f"⚠️ Dữ liệu nhập không hợp lệ: {e}", "warning")
+            return
         r = self.amg_bayes_result
         m = self.amg_measurement_used[-1]
         date_str = m.t_obs.strftime("%Y-%m-%d")
-        doses_payload = [{"dose_mg": d.dose_mg, "given_at": d.given_at.strftime("%Y-%m-%d %H:%M")}
-                          for d in self.amg_doses_used]
+        tau_by_time = {}
+        for row in self.amg_dose_rows:
+            d = row.try_dose()
+            if d is not None:
+                tau_by_time[d.given_at] = row.get_tau()
+        doses_payload = [{"dose_mg": d.dose_mg, "given_at": d.given_at.strftime("%Y-%m-%d %H:%M"),
+                          "t_inf_h": d.t_inf_h, "tau_h": tau_by_time.get(d.given_at, 24.0)} for d in doses_now]
+        # SCr lưu GIÁ TRỊ GỐC + ĐƠN VỊ người dùng chọn (không quy đổi khi lưu; chỉ quy đổi 1 lần lúc tính)
         scr_payload = [{"scr": v, "unit": u, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
-                       for v, u, dt in (r.get_raw() for r in self.amg_scr_rows)]
-        meas_payload = [{"c_obs": mm.c_obs, "t_obs": mm.t_obs.strftime("%Y-%m-%d %H:%M"), "t_inf_h": mm.t_inf_h}
-                        for mm in self._get_amg_measurements()]
+                       for v, u, dt in sorted(scr_raw_now, key=lambda x: x[2])]
+        meas_payload = [{"c_obs": mm.c_obs, "t_obs": mm.t_obs.strftime("%Y-%m-%d %H:%M")} for mm in meas_now]
         ok1, msg1 = db.save_amg_bayesian_patient_current(
             msyt=msyt, age=patient.age, gender=patient.gender, height=patient.height_cm,
             weight=patient.weight_kg, scr=patient.scr_value, doses_json=doses_payload,
@@ -1450,8 +1580,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         )
         ok2, msg2 = db.save_amg_bayesian_result_history(
             msyt=msyt, tdm_date=date_str, model="Aréchiga-Alvarado 2020",
-            cl_prior=self.amg_priors.cl_prior if self.amg_priors else None,
-            vd_prior=self.amg_priors.vd_prior if self.amg_priors else None,
+            cl_prior=r.cl_pop_current, vd_prior=r.vd_pop,
             cl_optimized=r.CL_optimized, vd_optimized=r.Vd_optimized, ke=r.Ke,
             cpeak_current=getattr(self, "_amg_last_cpeak", None),
             ctrough_current=getattr(self, "_amg_last_ctrough", None),
@@ -1477,6 +1606,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         for row in list(self.amg_newdose_rows):
             self._remove_amg_newdose_row(row)
         self.amg_bayes_result = None
+        self.drug_opt.set(next((d for d in DRUG_LIST if 'amikacin' in d.lower()), self.drug_opt.get()))  # bản ghi Bayesian chỉ có Amikacin
         if record.get("age") is not None:
             self.age_entry.set(record.get("age"))
         if record.get("height") is not None:
@@ -1493,12 +1623,16 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                 doses_raw = json.loads(doses_raw)
             except Exception:
                 doses_raw = []
-        parsed = sorted([(parse_float(it.get("dose_mg"), 0.0), parse_amg_dt(it.get("given_at")))
+        parsed = sorted([(parse_float(it.get("dose_mg"), 0.0), parse_amg_dt(it.get("given_at")), it)
                           for it in doses_raw], key=lambda x: x[1])
         if parsed:
-            for i, (dose_mg, given_at) in enumerate(parsed):
-                tau = (parsed[i + 1][1] - given_at).total_seconds() / 3600.0 if i + 1 < len(parsed) else 24.0
-                self._add_amg_dose_row(dose_default=dose_mg, tau_default=(tau if tau > 0 else 24.0), dt_default=given_at)
+            for i, (dose_mg, given_at, it) in enumerate(parsed):
+                tau = parse_float(it.get("tau_h"), 0.0)
+                if tau <= 0:   # bản ghi cũ: suy τ từ khoảng cách tới liều kế tiếp
+                    tau = (parsed[i + 1][1] - given_at).total_seconds() / 3600.0 if i + 1 < len(parsed) else 24.0
+                # Bản ghi cũ không có t_inf_h theo liều -> mặc định 1 h (giá trị cũ nằm ở từng điểm đo)
+                self._add_amg_dose_row(dose_default=dose_mg, tau_default=(tau if tau > 0 else 24.0),
+                                       dt_default=given_at, tinf_default=parse_float(it.get("t_inf_h"), 1.0))
         else:
             self._add_amg_dose_row()
         for row in list(self.amg_scr_rows):
@@ -1532,7 +1666,6 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         if meas_raw:
             for it in meas_raw:
                 self._add_amg_meas_row(cobs_default=parse_float(it.get("c_obs"), 8.0),
-                                        tinf_default=parse_float(it.get("t_inf_h"), 1.0),
                                         dt_default=parse_amg_dt(it.get("t_obs")))
         else:
             self._add_amg_meas_row()
