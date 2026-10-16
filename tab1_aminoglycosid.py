@@ -30,7 +30,14 @@ from amg_bayesian_calculations import (
     scr_to_mgdl, solve_bayesian_joint_amg, assign_measurements_amg,
     check_model_applicability_amg, compute_css_peak_trough_amg,
     simulate_concentration_curve_amg_tv,
+    # v16.10.26 -- da mo hinh
+    AmgClinicalInfo, AMG_MODELS, models_for_drug, model_key_from_label, recommend_model_amg,
+    solve_bayesian_multi, check_model_applicability_multi, compute_css_peak_trough_multi,
+    simulate_concentration_curve_multi, fit_diagnostics_amg, check_dose_overlap_amg,
+    get_lloq_amg, check_below_lloq_amg,
 )
+
+AMG_SETTING_LABELS = {"": "— chưa chọn —", "icu": "Hồi sức tích cực (ICU)", "ward": "Nội trú ngoài hồi sức"}
 def parse_amg_dt(value, default=None):
     """Parse chuỗi 'YYYY-MM-DD HH:MM' thành datetime.datetime. Lỗi -> default hoặc hiện tại."""
     value = str(value).strip()
@@ -409,11 +416,28 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             self.lookup_status.show("⚠️ Vui lòng nhập MSYT.", "warning")
             return
         p_data, t_data = db.get_latest_tdm(msyt)
+        # v16.10.26d: dữ liệu Bayesian nằm ở bảng riêng (amg_bayesian_patient_current) — tra cứu cả hai nơi
+        b_rec = db.get_amg_bayesian_patient_current(msyt)
+        if self.amg_method_var.get() == "Bayesian" and b_rec:
+            self.msyt_entry.set(msyt)
+            self.load_amg_bayesian()
+            self.lookup_status.show(f"✅ Đã tải dữ liệu Bayesian của bệnh nhân {msyt} (xem Mục G).", "success")
+            return
         if p_data:
             self.loaded_patient = p_data
             self.loaded_tdm = t_data
-            self.lookup_status.show(f"✅ Đã tải thành công bệnh nhân: {msyt}", "success")
+            note = (" Bệnh nhân còn có dữ liệu Bayesian — chọn phương pháp Bayesian rồi tra cứu lại để xem."
+                    if b_rec else "")
+            self.lookup_status.show(f"✅ Đã tải thành công bệnh nhân: {msyt}.{note}", "success")
             self._apply_loaded_defaults(msyt)
+        elif b_rec:
+            # Chỉ có dữ liệu Bayesian (chưa từng tính Sawchuk–Zaske) → chuyển sang Bayesian và tải
+            self.amg_method_var.set("Bayesian")
+            self.on_amg_method_change()
+            self.msyt_entry.set(msyt)
+            self.load_amg_bayesian()
+            self.lookup_status.show(f"✅ Bệnh nhân {msyt} chỉ có dữ liệu Bayesian — đã chuyển sang phương pháp Bayesian "
+                                    "và tải dữ liệu.", "success")
         else:
             self.loaded_patient = None
             self.loaded_tdm = None
@@ -1118,13 +1142,19 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         ctk.CTkOptionMenu(row, values=["Sawchuk-Zaske", "Bayesian"], variable=self.amg_method_var,
                            width=160, command=self.on_amg_method_change).pack(side="left", padx=(0, 16))
         # Khung chọn "Mô hình Bayesian" — CHỈ hiện khi phương pháp = Bayesian (ẩn hoàn toàn khi Sawchuk-Zaske)
+        # v16.10.26: nhiều mô hình theo thuốc; tự chọn theo thông tin bệnh nhân (người dùng vẫn đổi được)
         self.amg_model_row = ctk.CTkFrame(self, fg_color="transparent")
         ctk.CTkLabel(self.amg_model_row, text="Mô hình Bayesian:", font=FONT_SMALL).pack(side="left", padx=(0, 8))
-        self.amg_model_var = ctk.StringVar(value="Aréchiga-Alvarado 2020")
-        ctk.CTkOptionMenu(self.amg_model_row, values=["Aréchiga-Alvarado 2020"], variable=self.amg_model_var,
-                           width=210).pack(side="left")
+        self.amg_model_var = ctk.StringVar(value=AMG_MODELS["AA2020"].label)
+        self.amg_model_menu = ctk.CTkOptionMenu(self.amg_model_row, values=[AMG_MODELS["AA2020"].label],
+                                                variable=self.amg_model_var, width=260,
+                                                command=self._on_amg_model_manual)
+        self.amg_model_menu.pack(side="left")
+        self.amg_auto_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(self.amg_model_row, text="Tự động chọn theo thông tin bệnh nhân", variable=self.amg_auto_var,
+                        font=FONT_SMALL, command=self._on_amg_auto_toggle).pack(side="left", padx=(14, 0))
         self.amg_model_note = ctk.CTkLabel(
-            self, text="(Các mô hình Bayesian khác sẽ được cập nhật sau)", font=FONT_SMALL,
+            self, text="", font=FONT_SMALL,
             text_color=("gray45", "gray65"), wraplength=900, justify="left")
         self.amg_method_separator = ttk.Separator(self, orient="horizontal")
         self.amg_method_separator.pack(fill="x", padx=6, pady=(4, 4))
@@ -1150,12 +1180,47 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         )
     def _build_amg_bayesian_sections(self):
         p = self.bayes_container
-        ctk.CTkLabel(p, text="💊 TDM Bayesian — Mô hình Aréchiga-Alvarado 2020 (1 ngăn)", font=FONT_H2
-                     ).pack(anchor="w", padx=6, pady=(6, 4))
-        ctk.CTkLabel(p, text="Dùng chung Tuổi/Giới/Cân nặng/Chiều cao ở Mục 1 phía trên. Mô hình chỉ dành cho AMIKACIN; "
-                             "khớp chung tất cả các mẫu với CrCl biến thiên theo SCr.",
-                     font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left"
-                     ).pack(anchor="w", padx=6, pady=(0, 10))
+        self.amg_header_label = ctk.CTkLabel(p, text="💊 TDM Bayesian — Mô hình Aréchiga-Alvarado 2020 (1 ngăn)",
+                                             font=FONT_H2)
+        self.amg_header_label.pack(anchor="w", padx=6, pady=(6, 4))
+        self.amg_header_sub = ctk.CTkLabel(
+            p, text="Dùng chung Tuổi/Giới/Cân nặng/Chiều cao ở Mục 1 phía trên. Khớp chung tất cả các mẫu; "
+                    "hiệp biến chức năng thận biến thiên theo SCr.",
+            font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left")
+        self.amg_header_sub.pack(anchor="w", padx=6, pady=(0, 10))
+        # --- A. Thông tin lâm sàng bổ sung (chọn mô hình + hiệp biến riêng của từng mô hình) ---
+        ctk.CTkLabel(p, text="A. Thông tin lâm sàng bổ sung (để chọn mô hình và tính hiệp biến)", font=FONT_SMALL,
+                     text_color=("gray30", "gray80")).pack(anchor="w", padx=6, pady=(4, 2))
+        ctk.CTkLabel(p, text="Để trống albumin / CrCl nước tiểu nếu chưa có. Thiếu thông tin cần thiết → phần mềm "
+                             "không tự chọn được, hãy tự chọn mô hình ở dòng 'Mô hình Bayesian' phía trên.",
+                     font=FONT_SMALL, text_color=("gray45", "gray65"), wraplength=900, justify="left"
+                     ).pack(anchor="w", padx=6, pady=(0, 4))
+        clin = ctk.CTkFrame(p, fg_color="transparent")
+        clin.pack(fill="x", padx=6)
+        clin.grid_columnconfigure((0, 1, 2), weight=1, uniform="clin")
+        self.amg_setting_opt = LabeledOption(clin, "Bối cảnh điều trị", list(AMG_SETTING_LABELS.values()),
+                                             default=AMG_SETTING_LABELS[""])
+        self.amg_setting_opt.grid(row=0, column=0, sticky="ew", padx=4)
+        self.amg_albumin_entry = LabeledEntry(clin, "Albumin máu (g/L)", default="")
+        self.amg_albumin_entry.grid(row=0, column=1, sticky="ew", padx=4)
+        self.amg_urine_crcl_entry = LabeledEntry(clin, "CrCl đo nước tiểu 6 giờ (mL/phút) — Hodiamont", default="")
+        self.amg_urine_crcl_entry.grid(row=0, column=2, sticky="ew", padx=4)
+        self.amg_cf_chk = LabeledCheck(clin, "Xơ nang (cystic fibrosis)")
+        self.amg_cf_chk.grid(row=1, column=0, sticky="w", padx=4)
+        self.amg_ntm_chk = LabeledCheck(clin, "Bệnh phổi do NTM (mycobacteria không lao)")
+        self.amg_ntm_chk.grid(row=1, column=1, sticky="w", padx=4)
+        self.amg_oa_chk = LabeledCheck(clin, "Bụng hở + hút áp lực âm (NPT)")
+        self.amg_oa_chk.grid(row=1, column=2, sticky="w", padx=4)
+        self.amg_crrt_chk = LabeledCheck(clin, "Đang lọc máu liên tục (CRRT/CVVH)")
+        self.amg_crrt_chk.grid(row=2, column=0, sticky="w", padx=4)
+        self.amg_vanco_chk = LabeledCheck(clin, "Dùng kèm vancomycin")
+        self.amg_vanco_chk.grid(row=2, column=1, sticky="w", padx=4)
+        ctk.CTkButton(clin, text="🔄 Gợi ý lại mô hình", height=28, width=150,
+                      command=lambda: self._refresh_amg_models(force_auto=True)).grid(row=2, column=2, sticky="w", padx=4)
+        for w in (self.amg_setting_opt, self.amg_albumin_entry, self.amg_urine_crcl_entry, self.amg_cf_chk,
+                  self.amg_ntm_chk, self.amg_oa_chk, self.amg_crrt_chk, self.amg_vanco_chk):
+            w.var.trace_add("write", lambda *a: self._refresh_amg_models())
+        ttk.Separator(p, orient="horizontal").pack(fill="x", padx=6, pady=14)
         # --- B. Nhiều lần đo SCr ---
         ctk.CTkLabel(p, text="B. Các lần đo SCr", font=FONT_SMALL, text_color=("gray30", "gray80")
                      ).pack(anchor="w", padx=6, pady=(4, 4))
@@ -1181,8 +1246,13 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         # --- D. Nhiều điểm đo Cobs ---
         ctk.CTkLabel(p, text="D. Nồng độ đo được (nhiều điểm)", font=FONT_SMALL, text_color=("gray30", "gray80")
                      ).pack(anchor="w", padx=6, pady=(4, 2))
-        ctk.CTkLabel(p, text="Chỉ nhập Cobs và thời điểm lấy mẫu — phần mềm tự xác định mẫu thuộc liều thứ mấy.",
-                     font=FONT_SMALL, text_color=("gray45", "gray65")).pack(anchor="w", padx=6, pady=(0, 4))
+        ctk.CTkLabel(p, text="Chỉ nhập Cobs và thời điểm lấy mẫu — phần mềm tự xác định mẫu thuộc liều thứ mấy. "
+                             "KHÔNG nhập mẫu dưới ngưỡng định lượng của máy đo (không có giá trị định lượng).",
+                     font=FONT_SMALL, text_color=("gray45", "gray65"), wraplength=900, justify="left"
+                     ).pack(anchor="w", padx=6, pady=(0, 2))
+        self.amg_lloq_label = ctk.CTkLabel(p, text="", font=FONT_SMALL, text_color=("#9a6700", "#d29922"),
+                                           wraplength=900, justify="left")
+        self.amg_lloq_label.pack(anchor="w", padx=6, pady=(0, 4))
         self.amg_meas_container = ctk.CTkFrame(p, fg_color="transparent")
         self.amg_meas_container.pack(fill="x", padx=6)
         ctk.CTkButton(p, text="➕ Thêm điểm đo", height=30, width=140,
@@ -1208,7 +1278,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         row.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="ares")
         self.amg_card_cl = MetricCard(row, "CL_post (L/h)")
         self.amg_card_cl.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
-        self.amg_card_vd = MetricCard(row, "Vd_post (L)")
+        self.amg_card_vd = MetricCard(row, "Vd_post / V1_post (L)")
         self.amg_card_vd.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
         self.amg_card_ke = MetricCard(row, "Ke (h⁻¹)")
         self.amg_card_ke.grid(row=0, column=2, sticky="ew", padx=4, pady=4)
@@ -1261,7 +1331,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         self.amg_load_status = StatusLabel(p)
         self.amg_load_status.pack(fill="x", padx=6, pady=(4, 6))
         self.amg_prev_tree = ttk.Treeview(p, show="headings", height=4)
-        cols = ["Ngày TDM", "CL_post", "Vd_post", "Cpeak", "Ctrough", "Liều/τ"]
+        cols = ["Ngày TDM", "Mô hình", "CL_post", "Vd_post", "Cpeak", "Ctrough", "Liều/τ"]
         self.amg_prev_tree["columns"] = cols
         for col in cols:
             self.amg_prev_tree.heading(col, text=col)
@@ -1272,6 +1342,8 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                       command=self.save_amg_bayesian).pack(fill="x", padx=6, pady=(0, 4))
         self.amg_save_status = StatusLabel(p)
         self.amg_save_status.pack(fill="x", padx=6, pady=(0, 20))
+        for w in (self.age_entry, self.weight_entry, self.height_entry, self.gender_opt):
+            w.var.trace_add("write", lambda *a: self._refresh_amg_models())
     # --- Quản lý dòng SCr ---
     def _add_amg_scr_row(self, scr_default=80.0, unit_default="μmol/L", dt_default=None):
         row = AmgScrRow(self.amg_scr_container, on_remove=self._remove_amg_scr_row,
@@ -1378,36 +1450,132 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         ms = [m for _, m in self._get_amg_measurement_pairs()]
         ms.sort(key=lambda m: m.t_obs)
         return ms
-    # --- Mô hình chỉ dành cho Amikacin ---
-    def _amg_drug_ok(self):
-        return "amikacin" in str(self.drug_opt.get()).lower()
-    def _update_amg_drug_note(self):
-        if not hasattr(self, "amg_model_note"):
+    # --- Chọn mô hình (v16.10.26): theo thuốc + tự động theo thông tin bệnh nhân ---
+    def _amg_current_key(self):
+        return model_key_from_label(self.amg_model_var.get()) or "AA2020"
+    def _get_amg_clinical(self, strict=False):
+        """Thông tin lâm sàng bổ sung (Mục A). strict=True: báo lỗi nếu albumin/CrCl nước tiểu sai định dạng."""
+        def opt_float(entry, name, lo, hi):
+            raw = str(entry.get()).strip().replace(",", ".")
+            if not raw:
+                return None
+            try:
+                v = float(raw)
+            except ValueError:
+                if strict:
+                    raise ValueError(f"{name} không hợp lệ: {raw!r}")
+                return None
+            if not lo <= v <= hi:
+                if strict:
+                    raise ValueError(f"{name} = {v:g} ngoài khoảng cho phép {lo:g}–{hi:g}")
+                return None
+            return v
+        setting = next((k for k, v in AMG_SETTING_LABELS.items() if v == self.amg_setting_opt.get()), "")
+        return AmgClinicalInfo(
+            setting=setting, cf=bool(self.amg_cf_chk.get()), ntm=bool(self.amg_ntm_chk.get()),
+            open_abdomen=bool(self.amg_oa_chk.get()), crrt=bool(self.amg_crrt_chk.get()),
+            vanco=bool(self.amg_vanco_chk.get()),
+            albumin_gl=opt_float(self.amg_albumin_entry, "Albumin (g/L)", 5.0, 60.0),
+            urine_crcl=opt_float(self.amg_urine_crcl_entry, "CrCl nước tiểu (mL/phút)", 1.0, 400.0))
+    def _set_amg_clinical(self, clin):
+        self.amg_setting_opt.set(AMG_SETTING_LABELS.get(clin.setting, AMG_SETTING_LABELS[""]))
+        self.amg_albumin_entry.set("" if clin.albumin_gl is None else f"{clin.albumin_gl:g}")
+        self.amg_urine_crcl_entry.set("" if clin.urine_crcl is None else f"{clin.urine_crcl:g}")
+        self.amg_cf_chk.set(clin.cf)
+        self.amg_ntm_chk.set(clin.ntm)
+        self.amg_oa_chk.set(clin.open_abdomen)
+        self.amg_crrt_chk.set(clin.crrt)
+        self.amg_vanco_chk.set(clin.vanco)
+    def _set_amg_model_key(self, key):
+        self.amg_model_var.set(AMG_MODELS[key].label)
+        self._update_amg_header()
+    def _update_amg_header(self):
+        if not hasattr(self, "amg_header_label"):
             return
-        if self._amg_drug_ok():
-            self.amg_model_note.configure(text="(Các mô hình Bayesian khác sẽ được cập nhật sau)",
-                                           text_color=("gray45", "gray65"))
+        spec = AMG_MODELS.get(self._amg_current_key())
+        if spec is not None:
+            self.amg_header_label.configure(text=f"💊 TDM Bayesian — Mô hình {spec.label}")
+    def _on_amg_model_manual(self, choice=None):
+        """Người dùng tự chọn mô hình → tắt tự động chọn."""
+        self.amg_auto_var.set(False)
+        self._refresh_amg_models()
+    def _on_amg_auto_toggle(self):
+        self._refresh_amg_models(force_auto=bool(self.amg_auto_var.get()))
+    def _refresh_amg_models(self, force_auto=False):
+        """Cập nhật danh sách mô hình theo thuốc; nếu bật tự động thì chọn theo thông tin bệnh nhân."""
+        if not hasattr(self, "amg_model_menu") or not hasattr(self, "amg_cf_chk"):
+            return
+        if force_auto:
+            self.amg_auto_var.set(True)
+        drug = self.drug_opt.get()
+        keys = models_for_drug(drug)
+        labels = [AMG_MODELS[k].label for k in keys]
+        self.amg_model_menu.configure(values=labels or ["(không có mô hình)"])
+        if not keys:
+            self.amg_model_note.configure(text=f"⛔ Chưa có mô hình Bayesian cho {drug}.", text_color=("#cf222e", "#ff7b72"))
+            return
+        clin = self._get_amg_clinical()
+        try:
+            patient = self._get_amg_patient()
+            scr_last = patient.scr_value
+        except ValueError:
+            patient = AmgPatientInfo(age=self.age_entry.get_float(50.0), gender=self.gender_opt.get(),
+                                     height_cm=self.height_entry.get_float(170.0),
+                                     weight_kg=self.weight_entry.get_float(70.0), scr_value=0.0)
+            scr_last = None
+        rec_key, why, missing = recommend_model_amg(drug, patient, clin, scr_last)
+        cur = self._amg_current_key()
+        if self.amg_auto_var.get():
+            if rec_key is not None:
+                self._set_amg_model_key(rec_key)
+                self.amg_model_note.configure(text=f"🤖 Tự động chọn: {why}", text_color=("gray30", "gray75"))
+            else:
+                if cur not in keys:
+                    self._set_amg_model_key(keys[0])
+                self.amg_model_note.configure(
+                    text=f"⚠️ Chưa tự chọn được mô hình: {why} Đang dùng {AMG_MODELS[self._amg_current_key()].label} "
+                         "— bạn có thể tự chọn ở danh sách.", text_color=("#9a6700", "#d29922"))
         else:
-            self.amg_model_note.configure(
-                text=f"⛔ Mô hình Aréchiga-Alvarado 2020 chỉ được xây dựng cho AMIKACIN — KHÔNG áp dụng cho "
-                     f"{self.drug_opt.get()}. Hãy chọn Amikacin ở Mục 1, hoặc dùng phương pháp Sawchuk–Zaske.",
-                text_color=("#cf222e", "#ff7b72"))
+            if cur not in keys:
+                self._set_amg_model_key(keys[0])
+                cur = keys[0]
+            hint = (f" Gợi ý theo thông tin hiện có: {AMG_MODELS[rec_key].label}." if rec_key and rec_key != cur else "")
+            self.amg_model_note.configure(text=f"✋ Đang tự chọn mô hình {AMG_MODELS[cur].label}.{hint}",
+                                          text_color=("gray40", "gray70"))
+        self._update_amg_header()
+    def _amg_drug_ok(self):
+        spec = AMG_MODELS.get(self._amg_current_key())
+        return spec is not None and self._amg_current_key() in models_for_drug(self.drug_opt.get())
+    def _update_amg_drug_note(self):
+        self._refresh_amg_models()
+        if hasattr(self, "amg_lloq_label"):
+            lloq = get_lloq_amg(self.drug_opt.get())
+            self.amg_lloq_label.configure(
+                text=(f"Ngưỡng định lượng {self.drug_opt.get()}: {lloq:g} mg/L — mẫu thấp hơn sẽ bị chặn." if lloq else
+                      f"⚠️ Chưa cấu hình ngưỡng định lượng (giới hạn phát hiện của máy) cho {self.drug_opt.get()}: "
+                      "phần mềm chưa chặn được mẫu dưới ngưỡng, chỉ cảnh báo khi Cobs < 0,3 mg/L."),
+                text_color=("gray40", "gray70") if lloq else ("#9a6700", "#d29922"))
     # --- Chạy tối ưu Bayesian (khớp chung mọi mẫu, CrCl biến thiên theo SCr) ---
     def run_amg_bayes_solve(self):
         self.amg_warn_label.configure(text="")
         self.amg_eta_label.configure(text="")
         self.amg_points_label.configure(text="")
+        if self.amg_auto_var.get():
+            self._refresh_amg_models()      # cập nhật lựa chọn tự động theo SCr mới nhất trước khi tính
+        key = self._amg_current_key()
+        spec = AMG_MODELS[key]
         if not self._amg_drug_ok():
             self.amg_bayes_result = None
             self.amg_solve_status.show(
-                f"⛔ Mô hình Aréchiga-Alvarado 2020 chỉ xây dựng cho AMIKACIN — không áp dụng cho {self.drug_opt.get()}. "
-                "Hãy chọn Amikacin ở Mục 1 hoặc dùng phương pháp Sawchuk–Zaske.", "error")
+                f"⛔ Mô hình {spec.name} không áp dụng cho {self.drug_opt.get()} (chỉ cho: {', '.join(spec.drugs)}). "
+                "Hãy chọn mô hình khác hoặc dùng phương pháp Sawchuk–Zaske.", "error")
             return
         try:
             doses = self._get_amg_doses()
             pairs = self._get_amg_measurement_pairs()
             scr_entries = self._get_amg_scr_entries()
             patient = self._get_amg_patient() if scr_entries else None
+            clin = self._get_amg_clinical(strict=True)
         except ValueError as e:
             self.amg_solve_status.show(f"⚠️ {e}", "warning")
             return
@@ -1430,37 +1598,84 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                 row.set_assignment(f"⚠️ thuộc liều thứ {a['dose_index'] + 1} — đang TRONG lúc truyền", warn=True)
             else:
                 row.set_assignment(f"→ thuộc liều thứ {a['dose_index'] + 1}, {a['hours_after_end']:.2f} h sau khi kết thúc truyền")
+        # Các mô hình đều xây dựng trên NGƯỜI LỚN: chặn dữ liệu nhân trắc ngoài khoảng hợp lý (thường do nhập sai)
+        for val, lo, hi, name in ((patient.age, 18, 110, "Tuổi"), (patient.weight_kg, 25, 300, "Cân nặng (kg)"),
+                                  (patient.height_cm, 120, 230, "Chiều cao (cm)")):
+            if not lo <= val <= hi:
+                self.amg_bayes_result = None
+                self.amg_solve_status.show(f"⛔ {name} = {val:g} ngoài khoảng {lo}–{hi}: các mô hình Bayesian chỉ dành cho "
+                                           "người lớn — kiểm tra lại Mục 1.", "error")
+                return
+        # Mẫu dưới ngưỡng định lượng (LLOQ = giới hạn phát hiện của máy đo) không có giá trị cho Bayes → CHẶN
+        lloq, below = check_below_lloq_amg(self.drug_opt.get(), [m for _, m in pairs])
+        if below:
+            self.amg_bayes_result = None
+            for row, m in pairs:
+                if m in below:
+                    row.set_assignment(f"⛔ dưới ngưỡng định lượng ({lloq:g} mg/L) — xóa mẫu này", warn=True)
+            lst = ", ".join(f"{m.c_obs:g} mg/L lúc {m.t_obs:%d/%m %H:%M}" for m in below)
+            self.amg_solve_status.show(f"⛔ Có {len(below)} mẫu dưới ngưỡng định lượng {lloq:g} mg/L ({lst}). Mẫu dưới "
+                                       "ngưỡng không có giá trị định lượng — hãy xóa mẫu đó rồi chạy lại.", "error")
+            return
+        missing = spec.missing_inputs(clin)
+        if missing:
+            self.amg_bayes_result = None
+            self.amg_solve_status.show(f"⚠️ Mô hình {spec.name} cần thêm: {', '.join(missing)} (Mục A).", "warning")
+            return
         # Cảnh báo phạm vi áp dụng của mô hình (chỉ cảnh báo, không chặn)
-        warns = check_model_applicability_amg(patient, scr_entries, doses, measurements)
+        if key == "AA2020":
+            warns = check_model_applicability_amg(patient, scr_entries, doses, measurements) + check_dose_overlap_amg(doses)
+        else:
+            warns = check_model_applicability_multi(key, patient, clin, scr_entries, doses, measurements)
         if warns:
             any_warn = any(lv == "warn" for lv, _ in warns)
             self.amg_warn_label.configure(
                 text="\n".join(("⚠️ " if lv == "warn" else "ℹ️ ") + tx for lv, tx in warns),
                 text_color=("#9a6700", "#d29922") if any_warn else ("gray40", "gray70"))
-        result = solve_bayesian_joint_amg(patient, scr_entries, doses, measurements)
+        if key == "AA2020":     # giữ nguyên thuật toán đã kiểm chứng của phiên bản 11/10
+            result = solve_bayesian_joint_amg(patient, scr_entries, doses, measurements)
+        else:
+            result = solve_bayesian_multi(key, patient, clin, scr_entries, doses, measurements)
         self.amg_bayes_result = result
         if result is None or not result.success:
             self.amg_solve_status.show(f"❌ {result.message if result else 'Không có dữ liệu hợp lệ.'}", "error")
             return
+        # Kiểm tra sau khớp: η chạm biên / bất thường, phần dư lớn, nồng độ rất thấp
+        diag = fit_diagnostics_amg(key, clin, result)
+        if diag:
+            all_w = list(warns or []) + diag
+            any_warn = any(lv == "warn" for lv, _ in all_w)
+            diag_txt = "\n".join(("⚠️ " if lv == "warn" else "ℹ️ ") + tx for lv, tx in all_w)
+            self.amg_warn_label.configure(text=diag_txt,
+                                          text_color=("#9a6700", "#d29922") if any_warn else ("gray40", "gray70"))
         self.amg_measurement_used = sorted([m for m in measurements if m.t_obs > doses[0].given_at],
                                             key=lambda m: m.t_obs)
         self.amg_doses_used = doses
         self.amg_scr_used = scr_entries
         self.amg_patient_used = patient
+        self.amg_model_used_key = key
+        self.amg_clin_used = clin
         n_skip = len(measurements) - result.n_used
         n_skip_txt = f" (bỏ qua {n_skip} điểm đo trước liều đầu tiên)" if n_skip else ""
-        scr_txt = (f"CrCl biến thiên theo {len(scr_entries)} lần đo SCr" if len(scr_entries) > 1
-                   else "SCr không đổi (1 lần đo)")
-        self.amg_solve_status.show(f"✅ {result.message} Khớp chung {result.n_used} điểm đo; {scr_txt}{n_skip_txt}.", "success")
+        if spec.renal_key is None:
+            scr_txt = "mô hình không dùng hiệp biến SCr"
+        else:
+            scr_txt = (f"chức năng thận biến thiên theo {len(scr_entries)} lần đo SCr" if len(scr_entries) > 1
+                       else "SCr không đổi (1 lần đo)")
+        self.amg_solve_status.show(f"✅ [{spec.label}] {result.message} Khớp chung {result.n_used} điểm đo; "
+                                   f"{scr_txt}{n_skip_txt}.", "success")
         self.amg_card_cl.set_value(f"{result.CL_optimized:.4f}")
         self.amg_card_vd.set_value(f"{result.Vd_optimized:.2f}")
         self.amg_card_ke.set_value(f"{result.Ke:.4f}")
         self.amg_card_ofv.set_value(f"{result.OFV_final:.4f}")
-        self.amg_eta_label.configure(text=(
-            f"CrCl hiện tại = {result.crcl_current:.0f} mL/phút → CL quần thể = {result.cl_pop_current:.3f} L/h; "
-            f"η_CL = {result.eta_cl * 100:+.1f}% → CL hiện tại = {result.CL_optimized:.3f} L/h.   "
-            f"V quần thể = {result.vd_pop:.2f} L; η_V = {result.eta_vd * 100:+.1f}% → V = {result.Vd_optimized:.2f} L.   "
-            f"(OFV: tiên nghiệm {result.ofv_prior:.3f} + quan sát {result.ofv_obs:.3f})"))
+        if key == "AA2020":
+            self.amg_eta_label.configure(text=(
+                f"CrCl hiện tại = {result.crcl_current:.0f} mL/phút → CL quần thể = {result.cl_pop_current:.3f} L/h; "
+                f"η_CL = {result.eta_cl * 100:+.1f}% → CL hiện tại = {result.CL_optimized:.3f} L/h.   "
+                f"V quần thể = {result.vd_pop:.2f} L; η_V = {result.eta_vd * 100:+.1f}% → V = {result.Vd_optimized:.2f} L.   "
+                f"(OFV: tiên nghiệm {result.ofv_prior:.3f} + quan sát {result.ofv_obs:.3f})"))
+        else:
+            self.amg_eta_label.configure(text=self._amg_param_text(spec, result))
         lines = []
         for i, pt in enumerate(result.points):
             n = (pt["dose_index"] + 1) if pt["dose_index"] is not None else "?"
@@ -1474,8 +1689,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             tau_used = anchor_row.get_tau()
             dose_used = result.anchor_dose.dose_mg
             tinf_used = result.anchor_dose.t_inf_h
-            cpeak, ctrough = compute_css_peak_trough_amg(dose_used, tau_used, tinf_used,
-                                                           result.CL_optimized, result.Vd_optimized)
+            cpeak, ctrough = self._amg_css(dose_used, tau_used, tinf_used)
             self.amg_card_cpeak.set_value(f"{cpeak:.2f}")
             self.amg_card_ctrough.set_value(f"{ctrough:.2f}")
             self.amg_card_dose_used.set_value(f"{dose_used:g}")
@@ -1487,6 +1701,29 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                 new_row = self._add_amg_newdose_row(dose_default=dose_used, tau_default=tau_used, tinf_default=tinf_used)
                 self._compute_amg_newdose_row(new_row)
         self._refresh_amg_chart()
+    def _amg_param_text(self, spec, r):
+        names = {"CL": "CL (L/h)", "V1": "V1 (L)" if spec.n_cmt == 2 else "V (L)", "Q": "Q (L/h)", "V2": "V2 (L)"}
+        renal_lbl = {"crcl_cg": "CrCl Cockcroft–Gault", "egfr_ckdepi_abs": "eGFR CKD-EPI tuyệt đối",
+                     "egfr_mdrd175": "eGFR MDRD", "gfr_mdrd186": "GFR MDRD (Rea)"}
+        head = ""
+        if spec.renal_key:
+            head = f"{renal_lbl.get(spec.renal_key, spec.renal_key)} hiện tại = {r.crcl_current:.0f} mL/phút. "
+        parts = []
+        for n in spec.param_names():
+            pop, ind = r.params_pop.get(n), r.params_now.get(n)
+            if n in r.etas:
+                parts.append(f"{names[n]}: quần thể {pop:.3f} → cá thể {ind:.3f} (η = {r.etas[n]:+.3f})")
+            else:
+                parts.append(f"{names[n]}: {pop:.3f} (không có biến thiên cá thể)")
+        return (head + ";   ".join(parts) +
+                f".   (OFV = tiên nghiệm {r.ofv_prior:.3f} + quan sát {r.ofv_obs:.3f}; dạng −2LL như Tucuxi)")
+    def _amg_css(self, dose, tau, tinf):
+        """Cpeak/Ctrough trạng thái ổn định với thông số cá thể hiện tại của mô hình vừa chạy."""
+        r = self.amg_bayes_result
+        key = getattr(self, "amg_model_used_key", "AA2020")
+        if key == "AA2020":
+            return compute_css_peak_trough_amg(dose, tau, tinf, r.CL_optimized, r.Vd_optimized)
+        return compute_css_peak_trough_multi(r.params_now, AMG_MODELS[key].n_cmt, dose, tau, tinf)
     def _refresh_amg_chart(self):
         r = self.amg_bayes_result
         if r is None or not r.success:
@@ -1494,8 +1731,14 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         meas_list = self.amg_measurement_used or []
         t_end = (max(m.t_obs for m in meas_list) if meas_list else datetime.datetime.now()) + datetime.timedelta(hours=12)
         # CL(t) biến thiên theo SCr(t); đường cong đi qua các Cobs theo đúng mô hình đã khớp
-        times, concs = simulate_concentration_curve_amg_tv(
-            self.amg_patient_used, self.amg_scr_used, self.amg_doses_used, r.eta_cl, r.Vd_optimized, t_end=t_end)
+        key = getattr(self, "amg_model_used_key", "AA2020")
+        if key == "AA2020":
+            times, concs = simulate_concentration_curve_amg_tv(
+                self.amg_patient_used, self.amg_scr_used, self.amg_doses_used, r.eta_cl, r.Vd_optimized, t_end=t_end)
+        else:
+            times, concs = simulate_concentration_curve_multi(
+                key, self.amg_patient_used, self.amg_clin_used, self.amg_scr_used, self.amg_doses_used, r.etas,
+                t_end=t_end)
         if self.amg_chart_canvas is None:
             self.amg_chart_placeholder.pack_forget()
             fig = Figure(figsize=(7.5, 4.2), dpi=100)
@@ -1538,8 +1781,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         if dose <= 0 or tau <= 0 or tinf <= 0:
             self.amg_newdose_status.show("⚠️ Liều/τ/Tinf phải lớn hơn 0.", "warning")
             return
-        cpeak, ctrough = compute_css_peak_trough_amg(dose, tau, tinf, self.amg_bayes_result.CL_optimized,
-                                                       self.amg_bayes_result.Vd_optimized)
+        cpeak, ctrough = self._amg_css(dose, tau, tinf)
         row.set_result(cpeak, ctrough)
         self.amg_newdose_status.show("✅ Đã tính Cpeak/Ctrough dự đoán cho tổ hợp liều mới.", "success")
     # --- Lưu / tải kết quả TDM Bayesian ---
@@ -1559,6 +1801,13 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         except ValueError as e:
             self.amg_save_status.show(f"⚠️ Dữ liệu nhập không hợp lệ: {e}", "warning")
             return
+        # Block thông tin bệnh nhân (bảng patients, giống Sawchuk–Zaske) để tra cứu/Tab 2 thấy bệnh nhân
+        clin_now = getattr(self, "amg_clin_used", None) or self._get_amg_clinical()
+        ok0, msg0 = db.save_patient_info(msyt, patient.gender, patient.weight_kg, patient.height_cm, patient.age,
+                                         1 if clin_now.cf else 0)
+        if not ok0:
+            self.amg_save_status.show(f"❌ {msg0}", "error")
+            return
         r = self.amg_bayes_result
         m = self.amg_measurement_used[-1]
         date_str = m.t_obs.strftime("%Y-%m-%d")
@@ -1572,6 +1821,12 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         # SCr lưu GIÁ TRỊ GỐC + ĐƠN VỊ người dùng chọn (không quy đổi khi lưu; chỉ quy đổi 1 lần lúc tính)
         scr_payload = [{"scr": v, "unit": u, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
                        for v, u, dt in sorted(scr_raw_now, key=lambda x: x[2])]
+        # v16.10.26: thuốc, mô hình, chế độ tự chọn và thông tin lâm sàng bổ sung lưu kèm trong scr_json dưới
+        # dạng 1 phần tử đặc biệt {"_meta": {...}} (không cần đổi cấu trúc bảng trên Cloud)
+        model_key = getattr(self, "amg_model_used_key", "AA2020")
+        clin_used = getattr(self, "amg_clin_used", None) or self._get_amg_clinical()
+        scr_payload.append({"_meta": {"drug": self.drug_opt.get(), "model_key": model_key,
+                                      "auto": bool(self.amg_auto_var.get()), "clinical": clin_used.to_dict()}})
         meas_payload = [{"c_obs": mm.c_obs, "t_obs": mm.t_obs.strftime("%Y-%m-%d %H:%M")} for mm in meas_now]
         ok1, msg1 = db.save_amg_bayesian_patient_current(
             msyt=msyt, age=patient.age, gender=patient.gender, height=patient.height_cm,
@@ -1579,7 +1834,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             scr_json=scr_payload, measurements_json=meas_payload,
         )
         ok2, msg2 = db.save_amg_bayesian_result_history(
-            msyt=msyt, tdm_date=date_str, model="Aréchiga-Alvarado 2020",
+            msyt=msyt, tdm_date=date_str, model=AMG_MODELS[model_key].name,
             cl_prior=r.cl_pop_current, vd_prior=r.vd_pop,
             cl_optimized=r.CL_optimized, vd_optimized=r.Vd_optimized, ke=r.Ke,
             cpeak_current=getattr(self, "_amg_last_cpeak", None),
@@ -1606,7 +1861,23 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
         for row in list(self.amg_newdose_rows):
             self._remove_amg_newdose_row(row)
         self.amg_bayes_result = None
-        self.drug_opt.set(next((d for d in DRUG_LIST if 'amikacin' in d.lower()), self.drug_opt.get()))  # bản ghi Bayesian chỉ có Amikacin
+        scr_raw = record.get("scr_json") or []
+        if isinstance(scr_raw, str):
+            try:
+                scr_raw = json.loads(scr_raw)
+            except Exception:
+                scr_raw = []
+        meta = next((it.get("_meta") for it in scr_raw if isinstance(it, dict) and "_meta" in it), None) or {}
+        scr_raw = [it for it in scr_raw if isinstance(it, dict) and "_meta" not in it]
+        # Bản ghi cũ (trước v16.10.26) không có _meta: chỉ có Amikacin + Aréchiga-Alvarado 2020
+        drug_saved = meta.get("drug") if meta.get("drug") in DRUG_LIST else next(
+            (d for d in DRUG_LIST if 'amikacin' in d.lower()), self.drug_opt.get())
+        self.drug_opt.set(drug_saved)
+        self._set_amg_clinical(AmgClinicalInfo.from_dict(meta.get("clinical")))
+        saved_key = meta.get("model_key") if meta.get("model_key") in AMG_MODELS else "AA2020"
+        self.amg_auto_var.set(bool(meta.get("auto", False)))
+        self._set_amg_model_key(saved_key)
+        self._refresh_amg_models()
         if record.get("age") is not None:
             self.age_entry.set(record.get("age"))
         if record.get("height") is not None:
@@ -1637,12 +1908,6 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             self._add_amg_dose_row()
         for row in list(self.amg_scr_rows):
             self._remove_amg_scr_row(row)
-        scr_raw = record.get("scr_json") or []
-        if isinstance(scr_raw, str):
-            try:
-                scr_raw = json.loads(scr_raw)
-            except Exception:
-                scr_raw = []
         if scr_raw:
             for it in scr_raw:
                 # Dữ liệu cũ (lưu trước khi có ô chọn đơn vị) không có khóa "unit" -> mặc định
@@ -1669,6 +1934,7 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
                                         dt_default=parse_amg_dt(it.get("t_obs")))
         else:
             self._add_amg_meas_row()
+        self._refresh_amg_models()
         history = db.get_amg_bayesian_results_history(msyt)
         self.amg_prev_tree.delete(*self.amg_prev_tree.get_children())
         for row in history:
@@ -1679,5 +1945,6 @@ class Tab1CalcFrame(ctk.CTkScrollableFrame):
             ctrough = f"{row.get('ctrough_current', 0):.2f}" if row.get('ctrough_current') is not None else "--"
             dt = row.get('dose_used'); tu = row.get('tau_used')
             dose_tau = f"{dt:g}/{tu:g}" if dt is not None and tu is not None else "--"
-            self.amg_prev_tree.insert("", "end", values=(d_date, cl, vd, cpeak, ctrough, dose_tau))
+            model_name = str(row.get("model") or "Aréchiga-Alvarado 2020")
+            self.amg_prev_tree.insert("", "end", values=(d_date, model_name, cl, vd, cpeak, ctrough, dose_tau))
         self.amg_load_status.show(f"✅ Đã tải dữ liệu Bayesian cho MSYT {msyt}.", "success")
