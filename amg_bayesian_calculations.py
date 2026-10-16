@@ -742,6 +742,12 @@ def _tv_rea(c, clin):
     return {"CL": 3.14 * g / (54.8 ** 1.2 + g), "V1": 53.0 * c["tbw"] / 70.0}
 
 
+# --- 9. Xie 2021 (tobramycin, ICU MIMIC-III; J Antimicrob Chemother 76:2335; doi 10.1093/jac/dkab164)
+#     CLCR Cockcroft-Gault dung TBW; BSV omega = CV bao cao (quyet dinh nguoi dung 16/10/2026)
+def _tv_xie(c, clin):
+    return {"CL": 3.27 * (max(c["crcl_cg"], 1e-6) / 81.0) ** 0.76, "V1": 21.3, "Q": 2.40, "V2": 16.3}
+
+
 AMIKACIN, GENTAMICIN, TOBRAMYCIN = "amikacin", "gentamicin", "tobramycin"
 
 # NGUONG DINH LUONG (LLOQ, mg/L) = gioi han phat hien cua may do tai benh vien, theo tung thuoc.
@@ -803,6 +809,14 @@ AMG_MODELS = {
         population="102 BN hồi sức nội khoa (Mỹ), đa số suy thận (GFR TB 48 mL/phút); gentamicin/tobramycin gộp",
         reference="Rea RS et al. Ther Drug Monit 2008;30:674-81",
         ranges={"age": (18, 92), "weight": (29, 222), "gfr_mdrd186": (3.8, 102.5)}),
+    "XIE2021": AmgModelSpec(
+        "XIE2021", "Xie 2021", [TOBRAMYCIN], 2, _tv_xie,
+        lambda clin: (["CL", "V1", "V2"], _omega_matrix([0.495, 0.357, 0.776])), "exp", "prop",
+        sigma_prop=0.285, renal_key="crcl_cg",
+        population=("140 BN hồi sức (MIMIC-III, Mỹ), tuổi TV 62, CLCR TV 81 mL/phút; 71% liều kéo dài 3–8 mg/kg q24h; "
+                    "ngoại kiểm trên 97 BN nội trú (RMSE 21%)"),
+        reference="Xie F et al. J Antimicrob Chemother 2021;76:2335-41",
+        ranges={"age": (16, 85), "crcl_cg": (10, 166)}),
 }
 
 _RANGE_LABEL = {"age": ("Tuổi", ""), "weight": ("Cân nặng", " kg"), "crcl_cg": ("CrCl Cockcroft–Gault", " mL/phút"),
@@ -1157,10 +1171,10 @@ def recommend_model_amg(drug_label: str, patient: AmgPatientInfo, clin: AmgClini
     -> nguoi dung tu chon mo hinh."""
     dk = drug_key_amg(drug_label)
     if dk == TOBRAMYCIN:
-        why = "Tobramycin: Rea 2008 là mô hình duy nhất đủ tham số (gộp gentamicin/tobramycin, BN hồi sức)."
+        why = ("Tobramycin → Xie 2021 (mô hình riêng cho tobramycin, có ngoại kiểm; Rea 2008 là lựa chọn thay thế).")
         if clin.setting != "icu":
-            why += " Lưu ý: quần thể gốc là BN hồi sức nội khoa."
-        return "REA2008", why, []
+            why += " Lưu ý: quần thể gốc là BN hồi sức; ngoại kiểm trên BN nội trú."
+        return "XIE2021", why, []
     if dk == AMIKACIN:
         if clin.cf:
             return "ILL2018", "Người lớn xơ nang → Illamola 2018 (quần thể xơ nang).", []
