@@ -22,7 +22,7 @@ File này CHỈ còn chứa: cấu hình giao diện chung, khung sau đăng nh�
 
     tab2_patient_db.py      — Tab 2: CSDL Bệnh nhân trên Cloud (Tab2DatabaseFrame)
 
-    tab3_info.py            — Tab 3: Thông tin phần mềm (Tab3InfoFrame)
+    tab3_info.py            — Tab 3: Thông tin phần mềm & Quản trị tài khoản (Tab3InfoFrame)
 
     tab4_vancomycin.py      — Tab 4: TDM Vancomycin Bayes (Tab4VancoFrame)
 
@@ -260,7 +260,7 @@ class MainAppFrame(ctk.CTkFrame):
 
 
 
-        tab3 = tabview.add("ℹ️ Thông tin phần mềm")
+        tab3 = tabview.add("ℹ️ Thông tin phần mềm & Quản trị")
 
 
 
@@ -296,7 +296,7 @@ class MainAppFrame(ctk.CTkFrame):
 
 
 
-        Tab3InfoFrame(tab3, self.app).grid(row=0, column=0, sticky="nsew")
+        Tab3InfoFrame(tab3, self.app, username=self.username, role=self.role).grid(row=0, column=0, sticky="nsew")
 
 
 

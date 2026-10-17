@@ -109,7 +109,7 @@ def get_all_users():
         logger.error(f"Lỗi tải danh sách người dùng: {e}")
         return []
 def delete_user(username):
-    if username == 'admin':
+    if str(username).strip().lower() == 'admin':   # tài khoản gốc tên 'Admin' (viết hoa) -> so sánh không phân biệt hoa/thường
         return False, "Không thể xóa tài khoản Admin gốc!"
     if not supabase:
         return False, "Chưa kết nối Cloud!"
@@ -125,6 +125,61 @@ def delete_user(username):
     except Exception as e:
         logger.error(f"Lỗi xóa tài khoản: {e}")
         return False, f"Lỗi khi xóa: {e}"
+def _admin_err_text(e):
+    """Chuyen loi tu ham quan tri tren Supabase sang thong bao tieng Viet."""
+    s = str(e)
+    if "Khong co quyen admin" in s or "42501" in s:
+        return "Tài khoản đang đăng nhập không có quyền admin (hoặc phiên đăng nhập đã hết hiệu lực — hãy đăng nhập lại)."
+    if "toi thieu 6" in s:
+        return "Mật khẩu phải có ít nhất 6 ký tự."
+    if "Ten dang nhap toi thieu" in s:
+        return "Tên đăng nhập phải có ít nhất 3 ký tự và không chứa khoảng trắng."
+    if "da ton tai" in s or "duplicate key" in s:
+        return "Tên đăng nhập đã tồn tại."
+    if "invalid input value for enum" in s:
+        return "Vai trò không hợp lệ (không có trong danh sách vai trò của hệ thống)."
+    if "Khong tim thay tai khoan" in s:
+        return "Không tìm thấy tài khoản này."
+    if _rpc_missing(e):
+        return "Chưa có hàm quản trị trên Supabase — cần chạy file SQL C1 (sql_C1_quan_tri_tai_khoan.sql)."
+    return f"Lỗi Cloud: {s}"
+def admin_add_user(username, password, fullname, role):
+    """Cap tai khoan moi (chi admin). Khong co duong vong dua thang vao bang Users (bang da khoa)."""
+    if not supabase:
+        return False, "Chưa kết nối được Cloud Database!"
+    try:
+        supabase.rpc("amg_add_user", {"p_admin": _SESSION["u"], "p_admin_pass": _SESSION["p"],
+                                      "p_username": username, "p_password": password,
+                                      "p_fullname": fullname, "p_role": role}).execute()
+        return True, f"Đã cấp tài khoản '{username}'."
+    except Exception as e:
+        logger.error("Lỗi cấp tài khoản (chi tiết không ghi mật khẩu)")
+        return False, _admin_err_text(e)
+def admin_reset_password(username, new_password):
+    """Dat lai mat khau cho 1 tai khoan (chi admin) -- dung khi nguoi dung quen mat khau."""
+    if not supabase:
+        return False, "Chưa kết nối được Cloud Database!"
+    try:
+        supabase.rpc("amg_reset_password", {"p_admin": _SESSION["u"], "p_admin_pass": _SESSION["p"],
+                                            "p_username": username, "p_new_password": new_password}).execute()
+        if username == _SESSION["u"]:          # admin tu doi mat khau cua chinh minh -> cap nhat phien
+            _SESSION["p"] = new_password
+        return True, f"Đã đặt lại mật khẩu cho '{username}'."
+    except Exception as e:
+        logger.error("Lỗi đặt lại mật khẩu (chi tiết không ghi mật khẩu)")
+        return False, _admin_err_text(e)
+def admin_list_users():
+    """Danh sach tai khoan (Username, fullname, role) -- chi admin. Tra ve (ok, list hoac thong bao loi)."""
+    if not supabase:
+        return False, "Chưa kết nối được Cloud Database!"
+    try:
+        rows = supabase.rpc("amg_list_users", {"p_admin": _SESSION["u"], "p_admin_pass": _SESSION["p"]}).execute().data or []
+        return True, [(u["Username"], u.get("fullname") or "", u.get("role") or "") for u in rows]
+    except Exception as e:
+        logger.error(f"Lỗi tải danh sách tài khoản: {type(e).__name__}")
+        return False, _admin_err_text(e)
+def current_session_user():
+    return _SESSION["u"]
 # ==========================================
 # 3. QUẢN LÝ DỮ LIỆU BỆNH NHÂN & TDM TRÊN CLOUD
 # ==========================================
