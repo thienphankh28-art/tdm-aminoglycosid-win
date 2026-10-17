@@ -161,6 +161,10 @@ class VancoDose:
 
     given_at: datetime.datetime
 
+    # V17.10.26: thoi gian truyen RIENG cua lieu nay (gio). None = dung Tinf chung truyen vao ham tinh
+    # (hanh vi cu, tuong thich nguoc 100%). Cong thuc tinh KHONG doi -- chi doi Tinf lay cho tung lieu.
+    t_inf_h: Optional[float] = None
+
 
 
 
@@ -791,6 +795,12 @@ def compute_hybrid_constants(cl: float, vc: float, vp: float, q: float) -> Tuple
 
 
 
+def _tinf_of(d, t_inf_default: float) -> float:
+    """V17.10.26: Tinf cua 1 lieu = Tinf rieng cua lieu (neu co), nguoc lai = Tinf chung (hanh vi cu)."""
+    ti = getattr(d, "t_inf_h", None)
+    return t_inf_default if ti is None else ti
+
+
 def _dose_contribution_post_infusion(dose_mg: float, p_h: float, t_inf_h: float,
 
 
@@ -887,11 +897,13 @@ def compute_cpred_two_compartment(cl: float, vc: float, vp: float, q: float,
 
 
 
-        p_h = (t_obs - d.given_at).total_seconds() / 3600.0 - t_inf_h
+        ti = _tinf_of(d, t_inf_h)
+
+        p_h = (t_obs - d.given_at).total_seconds() / 3600.0 - ti
 
 
 
-        total += _dose_contribution_post_infusion(d.dose_mg, p_h, t_inf_h, vc, k21, alpha, beta)
+        total += _dose_contribution_post_infusion(d.dose_mg, p_h, ti, vc, k21, alpha, beta)
 
 
 
@@ -1361,7 +1373,7 @@ def simulate_concentration_curve(cl: float, vc: float, vp: float, q: float,
 
 
 
-            c += _dose_contribution_at_time(d.dose_mg, t_since, t_inf_h, vc, k21, alpha, beta)
+            c += _dose_contribution_at_time(d.dose_mg, t_since, _tinf_of(d, t_inf_h), vc, k21, alpha, beta)
 
 
 
@@ -1763,7 +1775,7 @@ def compute_cpred_two_compartment_piecewise(cl_segments: List[Tuple[datetime.dat
     for d in doses_sorted:
         if t_start_all <= d.given_at <= t_obs:
             breakpoints.add(d.given_at)
-            breakpoints.add(d.given_at + datetime.timedelta(hours=t_inf_h))
+            breakpoints.add(d.given_at + datetime.timedelta(hours=_tinf_of(d, t_inf_h)))
         elif d.given_at < t_start_all:
             breakpoints.add(t_start_all)
     for t_start, _ in cl_segments:
@@ -1780,8 +1792,9 @@ def compute_cpred_two_compartment_piecewise(cl_segments: List[Tuple[datetime.dat
         cl_seg = cl_at(seg_start)
         rate = 0.0
         for d in doses_sorted:
-            if d.given_at <= seg_start < d.given_at + datetime.timedelta(hours=t_inf_h):
-                rate += d.dose_mg / t_inf_h
+            ti = _tinf_of(d, t_inf_h)
+            if d.given_at <= seg_start < d.given_at + datetime.timedelta(hours=ti):
+                rate += d.dose_mg / ti
         a1, a2 = _segment_transition_2c(a1, a2, cl_seg, vc, vp, q, rate, dt_h)
     return a1 / vc
 

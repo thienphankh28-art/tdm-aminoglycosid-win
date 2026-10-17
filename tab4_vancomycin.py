@@ -208,7 +208,8 @@ class VancoDoseRow(ctk.CTkFrame):
 
 
 
-    def __init__(self, master, on_remove, on_auto_add, dose_default=1000.0, tau_default=12.0, dt_default=None, **kwargs):
+    def __init__(self, master, on_remove, on_auto_add, dose_default=1000.0, tau_default=12.0, dt_default=None,
+                 tinf_default=1.0, **kwargs):
 
         super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
 
@@ -221,6 +222,8 @@ class VancoDoseRow(ctk.CTkFrame):
         self.dose_var = ctk.StringVar(value=str(dose_default))
 
         self.tau_var = ctk.StringVar(value=str(tau_default))
+        # V17.10.26: thoi gian truyen RIENG cua tung lieu (truoc day nhap o dong nong do)
+        self.tinf_var = ctk.StringVar(value=str(tinf_default))
 
         self.dt_var = ctk.StringVar(value=dt_default.strftime("%Y-%m-%d %H:%M"))
 
@@ -247,8 +250,9 @@ class VancoDoseRow(ctk.CTkFrame):
 
 
         ctk.CTkLabel(grid, text="τ (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
-
         ctk.CTkEntry(grid, textvariable=self.tau_var, width=45).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(grid, text="Tinf (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(grid, textvariable=self.tinf_var, width=45).pack(side="left", padx=(0, 8))
 
 
 
@@ -293,14 +297,16 @@ class VancoDoseRow(ctk.CTkFrame):
         dose_mg = parse_float(self.dose_var.get(), 0.0)
 
         given_at = parse_vanco_datetime(self.dt_var.get())
-
-        return VancoDose(dose_mg=dose_mg, given_at=given_at)
+        return VancoDose(dose_mg=dose_mg, given_at=given_at, t_inf_h=self.get_tinf())
 
 
 
     def get_tau(self):
-
         return parse_float(self.tau_var.get(), 12.0)
+    def get_tinf(self):
+        """Thoi gian truyen cua lieu nay (h); sai/<=0 -> 1.0 (giong mac dinh cu)."""
+        v = parse_float(self.tinf_var.get(), 1.0)
+        return v if v > 0 else 1.0
 
 
 
@@ -347,7 +353,8 @@ class VancoScrRow(ctk.CTkFrame):
 
 
 class VancoMeasRow(ctk.CTkFrame):
-    """Một dòng nhập điểm đo nồng độ: Cobs + Tobs + Tinf + nút xóa (hỗ trợ nhiều điểm đo)."""
+    """Một dòng nhập điểm đo nồng độ: Cobs + Tobs + nút xóa (hỗ trợ nhiều điểm đo).
+    V17.10.26: Tinf chuyen sang dong LIEU; Tinf cua diem do = Tinf cua lieu neo (gan o _get_measurements)."""
 
     def __init__(self, master, on_remove, cobs_default=15.0, tinf_default=1.0, dt_default=None, **kwargs):
         super().__init__(master, fg_color=("gray95", "gray16"), corner_radius=6, **kwargs)
@@ -362,8 +369,6 @@ class VancoMeasRow(ctk.CTkFrame):
         ctk.CTkLabel(row, text="Tobs:", font=FONT_SMALL).pack(side="left", padx=(0, 2))
         ctk.CTkEntry(row, textvariable=self.dt_var, width=130).pack(side="left", padx=(0, 4))
         ctk.CTkButton(row, text="📅", width=32, command=self.open_calendar).pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(row, text="Tinf (h):", font=FONT_SMALL).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(row, textvariable=self.tinf_var, width=45).pack(side="left", padx=(0, 8))
         ctk.CTkButton(row, text="🗑", width=32, fg_color="#d1242f", hover_color="#a01c24",
                       command=lambda: on_remove(self)).pack(side="left")
 
@@ -435,7 +440,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         self._add_dose_row(dose_default=1000.0, tau_default=12.0, dt_default=now)
         self._add_dose_row(dose_default=1000.0, tau_default=12.0, dt_default=now + datetime.timedelta(hours=12))
         self._add_scr_row(scr_default=80.0, dt_default=now)
-        self._add_meas_row(cobs_default=15.0, tinf_default=1.0, dt_default=now + datetime.timedelta(hours=13))
+        self._add_meas_row(cobs_default=15.0, dt_default=now + datetime.timedelta(hours=13))
 
         # Hiển thị ngay thông tin dân số áp dụng của phương pháp mặc định (Goti 2018)
         self.on_method_change()
@@ -903,23 +908,44 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
+        # V17.10.26: Tinf luu theo tung lieu ("t_inf_h" trong doses_json). Ban ghi cu chua co -> suy tu Tinf cua
+        # diem do gan voi lieu do (cung quy tac _tucuxi_doses cua ban truoc), khong co diem do -> 1 h.
+        meas_raw0 = record.get("measurements_json") or []
+        if isinstance(meas_raw0, str):
+            try:
+                meas_raw0 = json.loads(meas_raw0)
+            except Exception:
+                meas_raw0 = []
+        legacy_meas = sorted([(parse_vanco_datetime(it.get("t_obs")), parse_float(it.get("t_inf_h"), 1.0))
+                              for it in meas_raw0], key=lambda x: x[0])
         parsed_doses = []
-
         for item in doses_raw:
-
             dose_mg = parse_float(item.get("dose_mg"), 0.0)
-
             given_at = parse_vanco_datetime(item.get("given_at"))
-
-            parsed_doses.append((dose_mg, given_at))
-
+            tinf_saved = parse_float(item.get("t_inf_h"), 0.0) if item.get("t_inf_h") is not None else 0.0
+            parsed_doses.append((dose_mg, given_at, tinf_saved))
         parsed_doses.sort(key=lambda x: x[1])
+        if any(t <= 0 for _, _, t in parsed_doses):
+            times = [g for _, g, _ in parsed_doses]
+            anchors = {}
+            for t_obs, ti in legacy_meas:
+                prior = [g for g in times if g <= t_obs]
+                if prior:
+                    anchors[max(prior)] = ti
+            keys = sorted(anchors)
+            default_ti = legacy_meas[0][1] if legacy_meas else 1.0
+            fixed = []
+            for mg, g, ti in parsed_doses:
+                if ti <= 0:
+                    nxt = [k for k in keys if k >= g]
+                    ti = anchors[nxt[0]] if nxt else (anchors[keys[-1]] if keys else default_ti)
+                fixed.append((mg, g, ti))
+            parsed_doses = fixed
 
 
 
         if parsed_doses:
-
-            for i, (dose_mg, given_at) in enumerate(parsed_doses):
+            for i, (dose_mg, given_at, tinf_i) in enumerate(parsed_doses):
 
                 if i + 1 < len(parsed_doses):
 
@@ -933,7 +959,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
                     tau = 12.0
 
-                self._add_dose_row(dose_default=dose_mg, tau_default=tau, dt_default=given_at)
+                self._add_dose_row(dose_default=dose_mg, tau_default=tau, dt_default=given_at, tinf_default=tinf_i)
 
         else:
 
@@ -984,7 +1010,6 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         if meas_raw:
             for item in meas_raw:
                 self._add_meas_row(cobs_default=parse_float(item.get("c_obs"), 15.0),
-                                    tinf_default=parse_float(item.get("t_inf_h"), 1.0),
                                     dt_default=parse_vanco_datetime(item.get("t_obs")))
         else:
             self._add_meas_row()
@@ -1028,6 +1053,9 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         default = measurements[0].t_inf_h if measurements else 1.0
         out = []
         for d in doses:
+            if getattr(d, "t_inf_h", None):          # V17.10.26: lieu co Tinf rieng -> dung luon
+                out.append((d.given_at, d.dose_mg, d.t_inf_h))
+                continue
             nxt = [k for k in keys if k >= d.given_at]
             tinf = anchors[nxt[0]] if nxt else (anchors[keys[-1]] if keys else default)
             out.append((d.given_at, d.dose_mg, tinf))
@@ -1179,7 +1207,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
     def _build_doses_section(self):
 
-        self._section_header("3. Lịch sử liều dùng (Truyền TM)")
+        self._section_header("3. Lịch sử liều dùng (Truyền TM) — mỗi liều có thời gian truyền Tinf riêng")
 
         ctk.CTkLabel(
 
@@ -1207,23 +1235,18 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-    def _add_dose_row(self, dose_default=1000.0, tau_default=12.0, dt_default=None):
-
+    def _add_dose_row(self, dose_default=1000.0, tau_default=12.0, dt_default=None, tinf_default=None):
+        if tinf_default is None:     # lieu them tay: lay Tinf cua lieu cuoi (neu co), khong thi 1 h
+            tinf_default = self.dose_rows[-1].get_tinf() if self.dose_rows else 1.0
         if dt_default is None:
-
             if self.dose_rows:
-
                 last_r = self.dose_rows[-1]
-
                 dt_default = last_r.get_dose().given_at + datetime.timedelta(hours=last_r.get_tau())
-
             else:
-
                 dt_default = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
-
         row = VancoDoseRow(self.doses_container, on_remove=self._remove_dose_row, on_auto_add=self._auto_add_dose_row,
-
-                            dose_default=dose_default, tau_default=tau_default, dt_default=dt_default)
+                            dose_default=dose_default, tau_default=tau_default, dt_default=dt_default,
+                            tinf_default=tinf_default)
 
         row.pack(fill="x", pady=3)
 
@@ -1233,11 +1256,10 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
 
 
-    def _insert_dose_row(self, dose_default, tau_default, dt_default, index):
-
+    def _insert_dose_row(self, dose_default, tau_default, dt_default, index, tinf_default=1.0):
         row = VancoDoseRow(self.doses_container, on_remove=self._remove_dose_row, on_auto_add=self._auto_add_dose_row,
-
-                            dose_default=dose_default, tau_default=tau_default, dt_default=dt_default)
+                            dose_default=dose_default, tau_default=tau_default, dt_default=dt_default,
+                            tinf_default=tinf_default)
 
         row.pack(fill="x", pady=3)
 
@@ -1259,7 +1281,8 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
             next_dt = cur_dose.given_at + datetime.timedelta(hours=cur_tau)
 
-            self._insert_dose_row(dose_default=cur_dose.dose_mg, tau_default=cur_tau, dt_default=next_dt, index=idx+1)
+            self._insert_dose_row(dose_default=cur_dose.dose_mg, tau_default=cur_tau, dt_default=next_dt, index=idx+1,
+                                  tinf_default=current_row.get_tinf())
 
         except Exception:
 
@@ -1343,6 +1366,14 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         """Trả về list VancoMeasurement đã sắp xếp theo Tobs tăng dần."""
         measurements = [r.get_measurement() for r in self.meas_rows]
         measurements.sort(key=lambda m: m.t_obs)
+        # V17.10.26: Tinf cua diem do = Tinf cua lieu neo (lieu muon nhat truoc Tobs) -- chi dung de luu/hien thi
+        # va lam gia tri du phong; bo tinh dung Tinf RIENG cua tung lieu.
+        doses = self._get_doses()
+        for m in measurements:
+            prior = [d for d in doses if d.given_at <= m.t_obs]
+            anchor = max(prior, key=lambda d: d.given_at) if prior else (doses[0] if doses else None)
+            if anchor is not None and anchor.t_inf_h:
+                m.t_inf_h = anchor.t_inf_h
         return measurements
 
 
@@ -1507,12 +1538,13 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         last_row = max(self.dose_rows, key=lambda r: r.get_dose().given_at)
         last_d, tau_l = last_row.get_dose(), last_row.get_tau()
         meas = self.measurement_used or []
-        tinf = meas[0].t_inf_h if meas else 1.0
+        # V17.10.26: lieu gia dinh tiep tuc che do lieu cuoi -> cung Tinf cua lieu cuoi
+        tinf = last_d.t_inf_h or (meas[0].t_inf_h if meas else 1.0)
         projected = []
         if tau_l > 0:                                  # doses chưa nhập nhưng nằm trong cửa sổ 24 h → giả định tiếp tục chế độ liều cuối
             t = last_d.given_at + datetime.timedelta(hours=tau_l)
             while t < t1 and len(projected) < 200:
-                projected.append(VancoDose(dose_mg=last_d.dose_mg, given_at=t))
+                projected.append(VancoDose(dose_mg=last_d.dose_mg, given_at=t, t_inf_h=tinf))
                 t += datetime.timedelta(hours=tau_l)
         step = 5
         n = 24 * 60 // step
@@ -1664,19 +1696,14 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         row.pack(fill="x", padx=6)
 
-        row.grid_columnconfigure((0, 1), weight=1, uniform="auc_in")
-
-        
-
+        row.grid_columnconfigure((0, 1, 2), weight=1, uniform="auc_in")
         self.v_new_dose_entry = LabeledEntry(row, "Liều mới (mg)", default=1000.0)
-
         self.v_new_dose_entry.grid(row=0, column=0, sticky="ew", padx=4)
-
-        
-
         self.v_new_tau_entry = LabeledEntry(row, "Khoảng đưa liều mới - τ (h)", default=12.0)
-
         self.v_new_tau_entry.grid(row=0, column=1, sticky="ew", padx=4)
+        # V17.10.26: Tinf moi gan lien voi lieu moi + tau moi (1 che do lieu)
+        self.v_new_tinf_entry = LabeledEntry(row, "Thời gian truyền mới - Tinf (h)", default=1.0)
+        self.v_new_tinf_entry.grid(row=0, column=2, sticky="ew", padx=4)
 
 
 
@@ -1693,15 +1720,12 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
 
         # --- 6b. Dự đoán Cpred tại 1 thời điểm cụ thể với liều/τ mới ---
         ctk.CTkLabel(
-            self, text="Dự đoán Cpred (liều/τ mới) — chồng chất liều: các liều ở Mục 3 + các liều "
-                       "của chế độ MỚI được dùng từ sau liều cuối (Mục 3) đến thời điểm dự đoán.",
+            self, text="Dự đoán Cpred (chế độ mới: liều/τ/Tinf ở trên) — chồng chất liều: các liều ở Mục 3 (mỗi liều "
+                       "với Tinf riêng) + các liều của chế độ MỚI (Tinf mới) được dùng từ sau liều cuối (Mục 3) đến thời điểm dự đoán.",
             font=FONT_SMALL, text_color=("gray40", "gray70"), wraplength=900, justify="left"
         ).pack(anchor="w", padx=6, pady=(16, 6))
 
-        row_tinf = ctk.CTkFrame(self, fg_color="transparent")
-        row_tinf.pack(fill="x", padx=6)
-        self.v_new_tinf_entry = LabeledEntry(row_tinf, "Tinf mới (h)", default=1.0)
-        self.v_new_tinf_entry.pack(fill="x")
+
 
         target_frame = ctk.CTkFrame(self, fg_color="transparent")
         target_frame.pack(fill="x", padx=6, pady=(10, 0))
@@ -1769,7 +1793,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         new_regimen_doses = []
         t = last_dose_time + datetime.timedelta(hours=new_tau)
         while t <= target_time and len(new_regimen_doses) < 500:
-            new_regimen_doses.append(VancoDose(dose_mg=new_dose, given_at=t))
+            new_regimen_doses.append(VancoDose(dose_mg=new_dose, given_at=t, t_inf_h=new_tinf))
             t += datetime.timedelta(hours=new_tau)
 
         full_doses = self._get_doses() + new_regimen_doses
@@ -1880,6 +1904,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         r = self.bayes_result
         q = self.priors.q_prior if self.priors is not None else 6.5
         meas_list = self.measurement_used or []
+        # V17.10.26: moi lieu dung Tinf rieng; gia tri nay chi la du phong (lieu khong co Tinf)
         t_inf_for_curve = meas_list[0].t_inf_h if meas_list else 1.0
         t_end = (max(m.t_obs for m in meas_list) if meas_list else datetime.datetime.now()) + datetime.timedelta(hours=6)
 
@@ -2069,7 +2094,7 @@ class Tab4VancoFrame(ctk.CTkScrollableFrame):
         r = self.bayes_result
         m = self.measurement_used[-1]  # điểm đo gần nhất của lần TDM cuối cùng — đại diện lưu vào lịch sử
         date_str = m.t_obs.strftime("%Y-%m-%d")
-        doses_payload = [{"dose_mg": d.dose_mg, "given_at": d.given_at.strftime("%Y-%m-%d %H:%M")}
+        doses_payload = [{"dose_mg": d.dose_mg, "given_at": d.given_at.strftime("%Y-%m-%d %H:%M"), "t_inf_h": d.t_inf_h}
                           for d in self.doses_used]
         scr_payload = [{"scr": v, "unit": u, "measured_at": dt.strftime("%Y-%m-%d %H:%M")}
                        for v, u, dt in (r.get_raw() for r in self.scr_rows)]
