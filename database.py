@@ -47,13 +47,126 @@ def reconnect_supabase():
     global _supabase_client
     _supabase_client = None
     return init_supabase()
-supabase = init_supabase()
+# ==========================================
+# 1b. CỔNG DỮ LIỆU CÓ MÃ PHIÊN (V.2.7.4 — bảo mật dữ liệu bệnh nhân)
+# ==========================================
+# Sau khi đăng nhập bằng amg_login_session, MỌI lệnh supabase.table("<bảng dữ liệu>")... được chuyển thành
+# lời gọi hàm amg_data(mã phiên, ...) phía Supabase -> khi bảng dữ liệu đã khóa (SQL C3), ai chỉ có khóa anon
+# mà không có tài khoản sẽ không đọc/ghi được. Cú pháp gọi giữ NGUYÊN (select/eq/order/limit/insert/upsert/
+# update/delete/execute) nên các tab và các hàm bên dưới KHÔNG phải sửa.
+# Nếu Supabase chưa có hàm mới (chưa chạy SQL C2) thì tự dùng cách cũ (đọc/ghi trực tiếp) để không gián đoạn.
+_DATA_TABLES = {"patients", "tdm_history", "vanco_patient_current", "vanco_tdm_history", "vanco_results_history",
+                "amg_bayesian_patient_current", "amg_bayesian_results_history"}
+
+
+class _Result:
+    def __init__(self, data):
+        self.data = data
+
+
+class _GatewayQuery:
+    """Bản thay thế supabase.table(...) đi qua hàm amg_data (cùng cú pháp chuỗi lệnh)."""
+    def __init__(self, gw, table):
+        self._gw, self._table = gw, table
+        self._op, self._row, self._cols = "select", None, "*"
+        self._filters, self._order, self._desc, self._limit, self._conflict = {}, None, False, None, None
+
+    def select(self, cols="*", **_):
+        self._op, self._cols = "select", cols or "*"
+        return self
+
+    def eq(self, col, value):
+        self._filters[col] = None if value is None else str(value)
+        return self
+
+    def order(self, col, desc=False, **_):
+        self._order, self._desc = col, bool(desc)
+        return self
+
+    def limit(self, n, **_):
+        self._limit = int(n)
+        return self
+
+    def insert(self, row, **_):
+        self._op, self._row = "insert", row
+        return self
+
+    def upsert(self, row, on_conflict=None, **_):
+        self._op, self._row, self._conflict = "upsert", row, on_conflict
+        return self
+
+    def update(self, row, **_):
+        self._op, self._row = "update", row
+        return self
+
+    def delete(self, **_):
+        self._op = "delete"
+        return self
+
+    def __getattr__(self, name):
+        raise AttributeError(f"Cổng dữ liệu chưa hỗ trợ lệnh .{name}() — cần bổ sung trong database.py")
+
+    def execute(self):
+        rows = self._row if isinstance(self._row, list) else [self._row]
+        out = []
+        for r in rows:                         # nhiều dòng -> gọi lần lượt (giống import từng dòng)
+            params = {"p_table": self._table, "p_op": self._op, "p_filters": self._filters, "p_row": r,
+                      "p_cols": self._cols, "p_order": self._order, "p_desc": self._desc, "p_limit": self._limit,
+                      "p_on_conflict": self._conflict}
+            data = self._gw._rpc_with_session("amg_data", params)
+            if isinstance(data, list):
+                out.extend(data)
+        return _Result(out)
+
+
+class _GatewayClient:
+    """Bọc Supabase client: bảng dữ liệu -> cổng amg_data (khi có mã phiên); còn lại giữ nguyên."""
+    def __init__(self, client):
+        self._client = client
+
+    def table(self, name):
+        if name in _DATA_TABLES and _SESSION.get("t"):
+            return _GatewayQuery(self, name)
+        return self._client.table(name)
+
+    from_ = table
+
+    def rpc(self, fn, params=None, **kw):
+        return self._client.rpc(fn, params or {}, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def _rpc_with_session(self, fn, params):
+        """Gọi hàm kèm mã phiên; phiên hết hạn -> tự đăng nhập lại (thông tin giữ trong RAM) rồi thử lại 1 lần."""
+        for attempt in (1, 2):
+            try:
+                return self._client.rpc(fn, {"p_token": _SESSION.get("t"), **params}).execute().data
+            except Exception as e:
+                if attempt == 1 and "Phien dang nhap het han" in str(e) and _SESSION.get("u"):
+                    if _new_session(_SESSION["u"], _SESSION["p"]):
+                        continue
+                raise
+
+
+def _new_session(username, password):
+    """Đăng nhập lấy mã phiên. Trả về dòng {fullname, role, token} hoặc None. Hàm chưa có -> ném lỗi PGRST202."""
+    data = _supabase_client.rpc("amg_login_session", {"p_username": username, "p_password": password}).execute().data
+    if data:
+        _SESSION["t"] = data[0].get("token")
+        return data[0]
+    _SESSION["t"] = None
+    return None
+
+
+_client0 = init_supabase()
+supabase = _GatewayClient(_client0) if _client0 else None
 # ==========================================
 # 2. QUẢN LÝ TÀI KHOẢN NGƯỜI DÙNG (Bảng 'Users')
 # ==========================================
 # Thông tin đăng nhập của phiên hiện tại — CHỈ giữ trong RAM, dùng để chứng minh quyền admin khi gọi hàm
 # quản lý tài khoản phía Supabase (không lưu ra đĩa, không ghi log).
-_SESSION = {"u": None, "p": None}
+_SESSION = {"u": None, "p": None, "t": None}   # t = mã phiên (V.2.7.4)
 def _rpc_missing(e):
     s = str(e)
     return "PGRST202" in s or "Could not find the function" in s
@@ -64,12 +177,20 @@ def check_login(username, password):
         return None
     try:
         try:
-            data = supabase.rpc("amg_login", {"p_username": username, "p_password": password}).execute().data
-        except Exception as e:
-            if not _rpc_missing(e):
+            # V.2.7.4: đăng nhập có mã phiên (cổng dữ liệu). Chưa chạy SQL C2 -> dùng amg_login cũ.
+            row = _new_session(username, password)
+            data = [row] if row else []
+        except Exception as e0:
+            if not _rpc_missing(e0):
                 raise
-            data = (supabase.table("Users").select("fullname, role")
-                    .eq("Username", username).eq("Password", password).execute().data)
+            _SESSION["t"] = None
+            try:
+                data = supabase.rpc("amg_login", {"p_username": username, "p_password": password}).execute().data
+            except Exception as e:
+                if not _rpc_missing(e):
+                    raise
+                data = (supabase.table("Users").select("fullname, role")
+                        .eq("Username", username).eq("Password", password).execute().data)
         if data and len(data) > 0:
             _SESSION["u"], _SESSION["p"] = username, password
             return data[0]['fullname'], data[0]['role']
